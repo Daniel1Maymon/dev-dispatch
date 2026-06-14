@@ -1,0 +1,18 @@
+# Local runtime state — never commit
+usage-data.js
+*.log
+
+# OS / editor cruft
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# commit-approval marker (local only)
+.claude_commit_approved
