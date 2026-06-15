@@ -51,11 +51,19 @@ dev-dispatch.html   renderContext() / pollUsage()
   `claude --resume <id> --permission-mode auto` in iTerm.
 - **Topics** = hybrid fallback chain: repo+feature → shared files → summary keywords → misc.
 
-## Local state (created at runtime, not in this repo)
+## Local state — `state/` (gitignored, never published)
 
-- `~/.claude/.dispatch-iterm.json` — maps Claude sessionId → iTerm session id (for focus/close).
-- `~/.claude/.dev-dispatch-read.json` — "read" markers per session.
-- `~/.claude/projects/<root>/*.jsonl` — Claude Code's own session logs (read-only input).
+All persisted dashboard state lives in a single `state/` folder beside the server
+(override with `DISPATCH_STATE_DIR`). It's gitignored so your work never leaves the machine:
+
+- `state/iterm-registry.json` — maps Claude sessionId → iTerm session id (for focus/close).
+- `state/read-markers.json` — "read" markers per session.
+- `state/recaps.json` — per-session AI recaps.
+- `state/issuecards.json` — per-session structured issue cards (focus board).
+- `state/archived.json` — subjects you've archived/marked done.
+
+The only external input is Claude Code's own logs (read-only):
+`~/.claude/projects/<root>/*.jsonl`.
 
 ## Notes
 

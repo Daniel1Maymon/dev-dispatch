@@ -534,7 +534,7 @@
   }
   .proj:hover { transform: translateY(-4px); box-shadow: var(--shadow); border-color: var(--ink); }
   .proj-top { display: flex; justify-content: space-between; align-items: center; }
-  .proj h4 { font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+  .proj h4 { font-family: var(--mono); font-size: 16.5px; font-weight: 600; letter-spacing: -.01em; }
   .health {
     font-family: var(--mono);
     font-size: 9.5px;
@@ -573,8 +573,8 @@
   .tm-item:hover { background: var(--paper-card); }
   .tm-item.active { background: var(--paper-card); border-left-color: var(--accent); }
   .tm-item h5 {
-    font-family: var(--serif); font-weight: 380; font-size: 15px;
-    letter-spacing: -.01em; line-height: 1.22; margin-bottom: 6px;
+    font-family: var(--serif); font-weight: 380; font-size: 18px;
+    letter-spacing: -.01em; line-height: 1.25; margin-bottom: 7px;
     display: flex; align-items: baseline; gap: 8px;
   }
   .tm-item.active h5 { font-weight: 500; }
@@ -584,7 +584,7 @@
   .tm-dot.files { background: var(--sky); }
   .tm-dot.summary { background: var(--gold); }
   .tm-dot.misc { background: var(--ink-faint); }
-  .tm-sub { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: .04em; }
+  .tm-sub { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); letter-spacing: .04em; }
 
   .topic-detail { padding: 26px 30px; max-height: 560px; overflow-y: auto; }
   .td-head { border-bottom: 2px solid var(--ink); padding-bottom: 16px; margin-bottom: 6px; }
@@ -597,7 +597,7 @@
     margin-top: 10px; letter-spacing: .04em; display: flex; align-items: center; gap: 8px;
   }
   .topic-src {
-    font-family: var(--mono); font-size: 9px; letter-spacing: .14em;
+    font-family: var(--mono); font-size: 11px; letter-spacing: .14em;
     text-transform: uppercase; padding: 4px 8px; flex-shrink: 0;
   }
   .topic-src.repo    { background: rgba(79,122,82,.16);  color: var(--green); }
@@ -612,32 +612,42 @@
   .tsession.unread { box-shadow: inset 3px 0 0 var(--accent); }
   .tsession.read .tprompt { color: var(--ink-faint); }
   .tsession .tmeta { flex: 1; min-width: 0; }
-  .tsession .tprompt { font-size: 15px; line-height: 1.45; color: var(--ink); }
+  .tsession .tprompt { font-size: 16.5px; line-height: 1.45; color: var(--ink); }
   .tsession .tsub {
-    font-family: var(--mono); font-size: 10.5px; color: var(--ink-faint);
-    margin-top: 5px; letter-spacing: .03em;
+    font-family: var(--mono); font-size: 13px; color: var(--ink-faint);
+    margin-top: 6px; letter-spacing: .03em;
   }
   .tsession .tsub b { color: var(--ink-soft); }
+  .tsession .trecap {
+    font-family: var(--sans); font-size: 14.5px; line-height: 1.45;
+    color: var(--ink-soft); margin-top: 8px; padding-left: 9px;
+    border-left: 2px solid var(--rule);
+  }
+  .tsession .trecap.pending { color: var(--ink-faint); font-style: italic; opacity: .8; }
+  .tsession .trecap .rlabel {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; color: var(--accent); margin-right: 6px;
+  }
   .tacts { display: flex; gap: 8px; flex-shrink: 0; margin-top: 2px; }
   .cls {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     border: 1px solid var(--rule); background: none; color: var(--ink-soft);
-    padding: 4px 10px; cursor: pointer; transition: all .2s ease;
+    padding: 5px 12px; cursor: pointer; transition: all .2s ease;
   }
   .cls:hover { background: var(--red); color: #fff; border-color: var(--red); }
   .cls.go { background: var(--red); color: #fff; border-color: var(--red); }
   .cls.err { background: var(--ink); color: #fff; border-color: var(--ink); }
   .cls:disabled { opacity: .55; cursor: default; }
   .mrk {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     border: 1px solid var(--rule); background: none; color: var(--ink-soft);
-    padding: 4px 10px; cursor: pointer; transition: all .2s ease;
+    padding: 5px 12px; cursor: pointer; transition: all .2s ease;
   }
   .mrk:hover, .mrk.go { background: var(--green); color: #fff; border-color: var(--green); }
   .mrk:disabled { opacity: .55; cursor: default; }
   .ubadge {
-    display: inline-block; font-family: var(--mono); font-size: 9px; letter-spacing: .1em;
-    text-transform: uppercase; font-weight: 600; padding: 1px 6px; border-radius: 2px;
+    display: inline-block; font-family: var(--mono); font-size: 11px; letter-spacing: .1em;
+    text-transform: uppercase; font-weight: 600; padding: 2px 7px; border-radius: 2px;
     margin-right: 8px; vertical-align: middle;
   }
   .ubadge.new     { background: var(--accent); color: #fff; }
@@ -648,9 +658,9 @@
     border-radius: 8px; padding: 1px 5px; margin-left: 6px; vertical-align: middle;
   }
   .mrk-all {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .06em; text-transform: uppercase;
     border: 1px dashed var(--rule); background: none; color: var(--ink-soft);
-    padding: 3px 10px; cursor: pointer; transition: all .2s ease; margin-left: 10px;
+    padding: 4px 12px; cursor: pointer; transition: all .2s ease; margin-left: 10px;
   }
   .mrk-all:hover { background: var(--green); color: #fff; border-color: var(--green); }
 
@@ -663,7 +673,7 @@
   .bar-fill { position:absolute; inset:0 100% 0 0; background: linear-gradient(90deg,var(--gold),var(--accent)); transition: right 1.1s cubic-bezier(.2,.7,.2,1);}
   .proj-meta {
     display: flex; justify-content: space-between;
-    font-family: var(--mono); font-size: 11px; color: var(--ink-soft);
+    font-family: var(--mono); font-size: 13px; color: var(--ink-soft);
     margin-top: 9px;
   }
   .proj-meta b { color: var(--ink); }
@@ -680,7 +690,7 @@
     display: flex; gap: 9px; align-items: baseline;
   }
   .proj-threads .t::before { content: "•"; color: var(--accent); }
-  .expand-hint { font-family: var(--mono); font-size: 10px; letter-spacing:.1em; text-transform: uppercase; color: var(--ink-faint); margin-top: 14px; }
+  .expand-hint { font-family: var(--mono); font-size: 11.5px; letter-spacing:.1em; text-transform: uppercase; color: var(--ink-faint); margin-top: 14px; }
   .proj.open .expand-hint { color: var(--accent); }
 
   /* ===================== TWO COLUMN: LOG + LOOPS ===================== */
@@ -708,23 +718,30 @@
   }
   .tl.accent::before { border-color: var(--accent); background: var(--accent); }
   .tl.end::before { border-color: var(--ink); background: var(--ink); }
-  .tl .time { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); letter-spacing:.05em;}
+  .tl .time { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); letter-spacing:.05em;}
   .tl .type {
-    font-family: var(--mono); font-size: 9.5px; letter-spacing:.14em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 12px; letter-spacing:.14em; text-transform: uppercase;
     color: var(--accent); margin-left: 10px; font-weight: 600;
   }
   .tl .type.commit { color: var(--green); }
   .tl .type.decision { color: var(--gold); }
   .tl .type.switch { color: var(--sky); }
-  .tl .what { font-size: 15px; margin-top: 4px; line-height: 1.5; }
-  .tl .what .code { font-family: var(--mono); font-size: 12.5px; color: var(--accent-deep); background: var(--paper-2); padding: 1px 6px; border-radius: 3px;}
-  .tl .ctx { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-top: 3px;}
+  .tl .what { font-size: 16.5px; margin-top: 5px; line-height: 1.5; }
+  .tl .what .code { font-family: var(--mono); font-size: 13.5px; color: var(--accent-deep); background: var(--paper-2); padding: 1px 6px; border-radius: 3px;}
+  .tl .ctx { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); margin-top: 4px;}
   .tl-foot { display: flex; align-items: center; gap: 11px; margin-top: 8px; }
-  .sid { font-family: var(--mono); font-size: 10px; color: var(--ink-faint); letter-spacing: .04em; }
+  .sid { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); letter-spacing: .04em; }
+  .ctxbar { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; color:var(--ink-soft); letter-spacing:.02em; }
+  .ctxbar .track { width:58px; height:7px; background:var(--paper-2); border:1px solid var(--rule); position:relative; overflow:hidden; }
+  .ctxbar .track i { position:absolute; left:0; top:0; bottom:0; background:var(--green); }
+  .ctxbar .track i.warn { background:var(--gold); }
+  .ctxbar .track i.hot  { background:var(--red); }
+  .ctxbar b { color:var(--ink); font-weight:600; }
+  .ctxbar b.hot { color:var(--red); }
   .rsm {
-    font-family: var(--mono); font-size: 10px; letter-spacing: .08em; text-transform: uppercase;
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     border: 1px solid var(--rule); background: none; color: var(--ink-soft);
-    padding: 4px 10px; cursor: pointer; transition: all .2s ease;
+    padding: 5px 12px; cursor: pointer; transition: all .2s ease;
   }
   .rsm:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .rsm.go { background: var(--green); color: #fff; border-color: var(--green); }
@@ -839,6 +856,7 @@
   <header class="masthead reveal" style="animation-delay:.05s">
     <div class="masthead-top">
       <div class="edition">No. <b>247</b> · Daily Edition</div>
+      <a href="/focus.html" style="font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent-deep);text-decoration:none;border:1px solid var(--rule);padding:6px 12px;">◉ Where am I now</a>
       <div class="clock" id="clock">—</div>
     </div>
     <div class="title">
@@ -1213,6 +1231,13 @@
       el.addEventListener("click", () => { SELECTED = el.dataset.id; renderTopicMenu(); renderTopicDetail(); }));
   }
 
+  function ctxChip(pct, tokens){
+    if(pct==null) return "";
+    const cls = pct>=75 ? "hot" : pct>=50 ? "warn" : "";
+    const tip = tokens ? `${Math.round(tokens/1000)}k of 1M tokens in context` : "";
+    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${pct}%</b></span>`;
+  }
+
   function renderTopicDetail(){
     const t = TOPICS.find(x => x.id === SELECTED);
     const d = $("topicDetail");
@@ -1227,6 +1252,10 @@
           <div class="tmeta">
             <div class="tprompt">${badge(s.state)}${esc((s.prompt||'').slice(0,200))}…</div>
             <div class="tsub"><b>${esc(s.id.slice(0,8))}</b> · ${esc(s.project)}${s.label!==s.project&&s.label!=='root'?' / '+esc(s.label):''} · ${s.msgs} exchanges · ${ago(s.end)} ago</div>
+            <div style="margin-top:7px">${ctxChip(s.ctxPct, s.ctxTokens)}</div>
+            ${s.recap
+              ? `<div class="trecap"><span class="rlabel">recap</span>${esc(s.recap)}</div>`
+              : `<div class="trecap pending">generating recap…</div>`}
           </div>
           <div class="tacts">
             <button class="rsm" data-sid="${esc(s.id)}">▶ resume</button>
@@ -1250,7 +1279,7 @@
     // greeting
     $("orient").innerHTML = "Your center of gravity is <span class=\"hl\">"+esc(r.name)+"</span> — "
       + r.sessionCount + " sessions, last touched <span class=\"hl\">"+ago(r.lastActivity)+" ago</span>. "
-      + (d.projects.length-1>0 ? (d.projects.length-1)+" other project"+(d.projects.length-1>1?"s":"")+" in the background." : "");
+      + ((d.projectCount-1)>0 ? (d.projectCount-1)+" other project"+((d.projectCount-1)>1?"s":"")+" in the background." : "");
 
     // resume hero
     $("rProject").textContent = r.name;
@@ -1268,10 +1297,11 @@
 
     // sidebar stats
     $("sStatWeek").textContent = d.sessionsThisWeek;
-    $("sStatProj").textContent = d.projects.length;
+    $("sStatProj").textContent = d.projectCount;
     $("sStatProjMeta").textContent = d.projects.map(p=>p.name).slice(0,3).join(" · ");
-    $("sStatTop").textContent = r.name;
-    $("sStatTopMeta").textContent = r.sessionCount + " sessions on it";
+    const ma = d.mostActive || r;
+    $("sStatTop").textContent = ma.name;
+    $("sStatTopMeta").textContent = ma.sessionCount + " sessions on it";
 
     // topics: feed the left menu + detail panel (keeps current selection)
     TOPICS = d.topics || [];
@@ -1288,7 +1318,7 @@
         <span class="time">${clock(s.start)}</span><span class="type ${tc}">${s.project}${s.label!==s.project&&s.label!=='root'?' · '+esc(s.label):''}</span>
         <div class="what">${badge(s.state)}${esc((s.prompt||'').slice(0,150))}…</div>
         <div class="ctx">${s.msgs} exchanges · ${ago(s.end)} ago${s.summary?' · '+esc(s.summary.slice(0,50)):''}</div>
-        <div class="tl-foot"><span class="sid">${esc(s.id.slice(0,8))}</span><button class="rsm" data-sid="${esc(s.id)}">▶ resume</button></div>
+        <div class="tl-foot"><span class="sid">${esc(s.id.slice(0,8))}</span>${ctxChip(s.ctxPct, s.ctxTokens)}<button class="rsm" data-sid="${esc(s.id)}">▶ resume</button></div>
       </div>`;
     }).join("");
 
