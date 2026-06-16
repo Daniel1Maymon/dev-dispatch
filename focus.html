@@ -124,7 +124,12 @@
     cursor:pointer; transition:all .2s ease;
   }
   .archive-btn:hover { background:var(--green); color:#fff; border-color:var(--green); }
+  .archive-btn.undo { color:var(--ink); border-color:var(--ink-faint); }
+  .archive-btn.undo:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
   .archive-btn:disabled { opacity:.6; cursor:default; }
+  /* a subject just marked done — greyed in place, with its inline undo, until next refresh */
+  .subject.archived-inline { opacity:.55; background:#e4e0d6; }
+  .subject.archived-inline .subj-title { text-decoration:line-through; text-decoration-color:var(--ink-faint); }
   .arch-wrap { margin-top:6px; border:1px dashed var(--rule); }
   .arch-h {
     font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
@@ -152,13 +157,31 @@
   .status.s-done         { color:var(--green); background:rgba(79,122,82,.14); }
 
   /* ---------- issue (a session within the subject) ---------- */
-  .issue { border-top:1px dotted var(--rule); padding:15px 0 13px; }
+  .issue { border-top:1px dotted var(--rule); padding:15px 14px 13px; margin:0 -14px; transition:background .2s ease; }
+  .issue.closed { background:#e4e0d6; }            /* greyed out when closed */
+  .issue.closed .issue-title { color:var(--ink-faint); text-decoration:line-through; text-decoration-color:var(--ink-faint); }
+  .issue.closed .issue-recap, .issue.closed .ctxbar, .issue.closed .meta, .issue.closed .times { opacity:.6; }
   .issue-head { display:flex; align-items:baseline; gap:9px; margin-bottom:4px; }
   .issue-dot { font-size:11px; line-height:1; }
   .issue-dot.s-in_progress  { color:var(--accent); }
   .issue-dot.s-blocked      { color:var(--red); }
   .issue-dot.s-winding_down { color:var(--gold); }
   .issue-dot.s-done         { color:var(--green); }
+  .issue-dot.s-closed       { color:var(--ink-faint); }
+  .issue-status { margin-left:auto; font-family:var(--mono); font-size:10px; letter-spacing:.1em; text-transform:uppercase; font-weight:600; padding:3px 8px; }
+  .issue-status.s-in_progress  { color:var(--accent); background:rgba(207,79,28,.1); }
+  .issue-status.s-blocked      { color:var(--red); background:rgba(177,71,58,.12); }
+  .issue-status.s-winding_down { color:var(--gold); background:rgba(194,144,47,.12); }
+  .issue-status.s-done         { color:var(--green); background:rgba(79,122,82,.12); }
+  .issue-status.s-closed       { color:#fff; background:var(--ink-faint); }
+  .issue-acts { display:flex; gap:8px; flex-shrink:0; }
+  .closebtn {
+    font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; font-weight:500;
+    border:1px solid var(--rule); background:none; color:var(--ink-faint); padding:6px 12px; cursor:pointer; transition:all .2s ease;
+  }
+  .closebtn:hover { background:var(--green); color:#fff; border-color:var(--green); }
+  .closebtn.undo:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .closebtn:disabled { opacity:.6; cursor:default; }
   .issue-title { font-size:16.5px; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
   .issue-recap { font-size:13.5px; color:var(--ink-faint); margin:2px 0 9px; line-height:1.4; }
   .now {
@@ -182,6 +205,7 @@
   .ctxbar .track i.hot  { background:var(--red); }
   .ctxbar b { color:var(--ink); font-weight:600; }
   .ctxbar b.hot { color:var(--red); }
+  .ctxbar b.danger { color:var(--red); font-weight:800; }
   .resume {
     font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; font-weight:500;
     border:1px solid var(--ink); background:none; color:var(--ink); padding:6px 13px; cursor:pointer; transition:all .2s ease;
@@ -260,8 +284,8 @@
 <script>
   const $ = id => document.getElementById(id);
   const esc = s => (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-  const STATUS_LABEL = { in_progress:"in progress", blocked:"blocked", winding_down:"winding down", done:"done" };
-  const STATUS_DOT   = { in_progress:"●", blocked:"◆", winding_down:"◑", done:"✓" };
+  const STATUS_LABEL = { in_progress:"in progress", blocked:"blocked", winding_down:"winding down", done:"done", closed:"done" };
+  const STATUS_DOT   = { in_progress:"●", blocked:"◆", winding_down:"◑", done:"✓", closed:"✓" };
 
   function ago(iso){
     if(!iso) return "—";
@@ -280,7 +304,10 @@
       const r = await fetch("/api/open", {method:"POST", headers:{"Content-Type":"application/json"},
         body: JSON.stringify({session: sid})});
       const d = await r.json();
-      if(d.ok){ btn.classList.add("go"); btn.textContent = d.action === "focused" ? "✓ focused" : "✓ opened"; }
+      if(d.ok){ btn.classList.add("go");
+        btn.textContent = d.action === "focused" ? "✓ focused"
+                        : d.action === "running" ? "▸ live — attach in agents"
+                        : "✓ opened"; }
       else { throw new Error(d.error||"failed"); }
     } catch(e){ btn.classList.add("err"); btn.textContent = "✕ failed"; }
     setTimeout(()=>{ btn.disabled=false; btn.classList.remove("go","err"); btn.textContent=orig; }, 3500);
@@ -337,14 +364,25 @@
 
   function ctxChip(pct, tokens){
     if(pct==null) return "";
-    const cls = pct>=75 ? "hot" : pct>=50 ? "warn" : "";
-    const tip = tokens ? `${Math.round(tokens/1000)}k of 1M tokens in context` : "";
-    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${pct}%</b></span>`;
+    const left = Math.max(0, 100 - pct);            // matches the terminal's "context left"
+    const low = left < 20;                          // running out of room
+    const cls = low ? "hot" : pct>=50 ? "warn" : "";
+    const tk = tokens ? Math.round(tokens/1000)+"k" : "—";
+    const tip = `${tk} of 1M tokens used · ${pct}% used · ${left}% left`;
+    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${tk}</b> · <b class="${low?'danger':cls}">${left}%</b> left</span>`;
   }
 
   function renderIssue(i){
     const c = i.card;
-    const st = (c && c.status) || "in_progress";
+    const st = i.closed ? "closed" : ((c && c.status) || "in_progress");
+    const closeBtn = i.closed
+      ? `<button class="closebtn undo" data-sid="${esc(i.id)}">⤺ undo</button>`
+      : `<button class="closebtn" data-sid="${esc(i.id)}">✓ done</button>`;
+    const head = `<div class="issue-head">
+        <span class="issue-dot s-${st}">${STATUS_DOT[st]||'●'}</span>
+        <span class="issue-title">${esc((c && c.issue) || (i.recap||'').slice(0,50) || 'this session')}</span>
+        <span class="issue-status s-${st}">${STATUS_LABEL[st]||st}</span>
+      </div>`;
     const foot = `<div class="issue-foot">
         <div class="left">
           ${ctxChip(i.ctxPct, i.ctxTokens)}
@@ -354,23 +392,23 @@
             <span title="last prompt ${absTime(i.end)}">✎ last ${ago(i.end)}</span>
           </span>
         </div>
-        <button class="resume" data-sid="${esc(i.id)}">▶ resume</button>
+        <div class="issue-acts">
+          <button class="resume" data-sid="${esc(i.id)}">▶ resume</button>
+          ${closeBtn}
+        </div>
       </div>`;
     if(!c){
-      return `<div class="issue">
-        <div class="issue-head"><span class="issue-title">${esc((i.recap||'this session').slice(0,60))}</span></div>
+      return `<div class="issue${i.closed?' closed':''}">${head}
         <div class="issue-pending">thinking through where this stands…</div>
         ${foot}
       </div>`;
     }
-    const now = c.next ? `<div class="now"><span class="lab">▶ now</span><span class="txt">${esc(c.next)}</span></div>` : "";
-    const blocked = c.blocked ? `<div class="blocked"><span class="lab">⚠ stuck</span><span>${esc(c.blocked)}</span></div>` : "";
+    // a closed issue hides its next-action/blocker — it's parked
+    const now = (!i.closed && c.next) ? `<div class="now"><span class="lab">▶ now</span><span class="txt">${esc(c.next)}</span></div>` : "";
+    const blocked = (!i.closed && c.blocked) ? `<div class="blocked"><span class="lab">⚠ stuck</span><span>${esc(c.blocked)}</span></div>` : "";
     const recap = i.recap ? `<div class="issue-recap">${esc(i.recap)}</div>` : "";
-    return `<div class="issue">
-      <div class="issue-head">
-        <span class="issue-dot s-${st}">${STATUS_DOT[st]||'●'}</span>
-        <span class="issue-title">${esc(c.issue || (i.recap||'').slice(0,50) || 'this session')}</span>
-      </div>
+    return `<div class="issue${i.closed?' closed':''}">
+      ${head}
       ${recap}
       ${now}
       ${blocked}
@@ -386,7 +424,7 @@
         <div class="subj-proj">${esc(s.project||'')} · ${s.issueCount} issue${s.issueCount>1?'s':''}${s.sessionCount>s.issueCount?` of ${s.sessionCount}`:''}</div></div>
         <div class="subj-actions">
           <span class="status s-${st}">${STATUS_DOT[st]||'●'} ${STATUS_LABEL[st]||st}</span>
-          <button class="archive-btn" data-key="${esc(s.id)}" title="Archive this subject — it comes back automatically if you work on it again">✓ done</button>
+          <button class="archive-btn" data-key="${esc(s.id)}" title="Archive the WHOLE subject — it comes back automatically if you work on it again">⊟ archive subject</button>
         </div>
       </div>
       ${(s.issues||[]).map(renderIssue).join("")}
@@ -415,6 +453,8 @@
       : `<div class="empty">No active subjects found. Open the full dashboard to see everything.</div>`;
     $("board").querySelectorAll(".resume").forEach(b =>
       b.addEventListener("click", () => openSession(b.dataset.sid, b)));
+    $("board").querySelectorAll(".closebtn").forEach(b =>
+      b.addEventListener("click", () => closeIssue(b.dataset.sid, b.classList.contains("undo"), b)));
     $("board").querySelectorAll(".archive-btn").forEach(b =>
       b.addEventListener("click", () => archiveSubject(b.dataset.key, false, b)));
 
@@ -440,12 +480,33 @@
   }
 
   async function archiveSubject(key, undo, btn){
-    if(btn){ btn.disabled = true; btn.textContent = undo ? "restoring…" : "…"; }
+    if(undo){
+      if(btn){ btn.disabled = true; btn.textContent = "restoring…"; }
+      try { await fetch("/api/archive", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({subject: key, undo: true})}); } catch(e){}
+      await pollFocus();
+      return;
+    }
+    // archive, but keep the card in place with an inline UNDO (don't yank it away).
+    // It drops to the "archived" list on the next refresh if you don't undo.
+    try { await fetch("/api/archive", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({subject: key})}); } catch(e){}
+    const card = btn && btn.closest(".subject");
+    if(card){
+      card.classList.add("archived-inline");
+      btn.outerHTML = `<button class="archive-btn undo" data-key="${esc(key)}">⤺ undo</button>`;
+      const u = card.querySelector(".archive-btn.undo");
+      if(u) u.addEventListener("click", () => archiveSubject(key, true, u));
+    }
+  }
+
+  async function closeIssue(sid, undo, btn){
+    if(btn){ btn.disabled = true; btn.textContent = undo ? "undoing…" : "marking done…"; }
     try {
-      await fetch("/api/archive", {method:"POST", headers:{"Content-Type":"application/json"},
-        body: JSON.stringify({subject: key, undo: !!undo})});
+      await fetch("/api/close", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session: sid, undo: !!undo})});
     } catch(e){}
-    await pollFocus();   // reflect the change immediately
+    await pollFocus();   // greys the row / restores it immediately
   }
 
   async function refreshNow(){

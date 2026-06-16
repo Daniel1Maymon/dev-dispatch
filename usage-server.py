@@ -15,7 +15,6 @@ import json
 import os
 import re
 import shlex
-import socketserver
 import subprocess
 import threading
 import time
@@ -55,10 +54,12 @@ RECAP_CONCURRENCY = int(os.environ.get("RECAP_CONCURRENCY", "3"))
 # the same `claude -p` engine, cached on disk, regenerated only when that session changes.
 ISSUECARD_PATH = os.path.join(STATE_DIR, "issuecards.json")
 ARCHIVE_PATH = os.path.join(STATE_DIR, "archived.json")
+CLOSED_PATH = os.path.join(STATE_DIR, "closed.json")  # sessions you closed (greyed, status "closed")
 FOCUS_TOPN = int(os.environ.get("FOCUS_TOPN", "3"))         # subjects (topics) to show
 FOCUS_POOL = int(os.environ.get("FOCUS_POOL", "5"))         # subjects to keep cards warm for
 FOCUS_ISSUES = int(os.environ.get("FOCUS_ISSUES", "6"))     # issues (sessions) per subject
-STALE_DAYS = int(os.environ.get("STALE_DAYS", "14"))        # hide subjects untouched this long
+STALE_DAYS = int(os.environ.get("STALE_DAYS", "7"))         # drop sessions untouched this long
+DONE_KEEP_DAYS = int(os.environ.get("DONE_KEEP_DAYS", "7"))  # done sessions vanish this long after
 
 # Context-window size for the per-session "how full is the context" gauge.
 # This account runs the 1M-token window (sessions peak ~730k); override if needed.
@@ -557,7 +558,7 @@ def _issuecard_refresh():
     return done
 
 
-_SUBJECT_RANK = {"blocked": 0, "in_progress": 1, "winding_down": 2, "done": 3}
+_SUBJECT_RANK = {"blocked": 0, "in_progress": 1, "winding_down": 2, "done": 3, "closed": 4}
 
 
 def _subject_status(issues):
@@ -566,6 +567,32 @@ def _subject_status(issues):
     if not statuses:
         return "in_progress"
     return min(statuses, key=lambda s: _SUBJECT_RANK.get(s, 1))
+
+
+def _closed_load():
+    try:
+        with open(CLOSED_PATH) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _closed_save(d):
+    tmp = CLOSED_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2)
+    os.replace(tmp, CLOSED_PATH)
+
+
+def set_closed(sid, undo):
+    """Persist a session 'close' click (or reopen). Returns the new closed state."""
+    closed = _closed_load()
+    if undo:
+        closed.pop(sid, None)
+    else:
+        closed[sid] = {"closedAt": datetime.datetime.now(datetime.timezone.utc).isoformat()}
+    _closed_save(closed)
+    return not undo
 
 
 def _archive_load():
@@ -634,11 +661,30 @@ def _build_focus():
     topics = ctx.get("topics") or []
     cache = _issuecard_load()
     eligible, archived_now = _eligible_subjects(topics)
+    closed_map = _closed_load()
+    done_cut = (datetime.datetime.now(datetime.timezone.utc)
+                - datetime.timedelta(days=DONE_KEEP_DAYS)).isoformat()
+
+    def _keep(s):
+        # done sessions vanish a week after they were marked done
+        if not s.get("closed"):
+            return True
+        ca = (closed_map.get(s["id"]) or {}).get("closedAt")
+        return not ca or ca >= done_cut
+
     out = []
     for t in eligible[:FOCUS_TOPN]:
-        sessions = t["sessions"][:FOCUS_ISSUES]
+        kept = [s for s in t["sessions"] if _keep(s)]
+        kept.sort(key=lambda s: 1 if s.get("closed") else 0)  # done sink to the bottom
+        sessions = kept[:FOCUS_ISSUES]
+        if not sessions:
+            continue  # every session here is done and has aged out
         issues = []
         for s in sessions:
+            card = (cache.get(s["id"]) or {}).get("card")
+            is_closed = bool(s.get("closed"))
+            if is_closed and card:
+                card = {**card, "status": "closed"}  # closed overrides the AI status
             issues.append({
                 "id": s["id"],
                 "project": s.get("project", ""),
@@ -649,7 +695,8 @@ def _build_focus():
                 "recap": s.get("recap"),
                 "ctxTokens": s.get("ctxTokens"),
                 "ctxPct": s.get("ctxPct"),
-                "card": (cache.get(s["id"]) or {}).get("card"),
+                "closed": is_closed,
+                "card": card,
             })
         recent = sessions[0] if sessions else {}
         out.append({
@@ -700,12 +747,18 @@ def _build_context():
     # accurate. Reading a few hundred small logs is cheap and the result is cached.
     files = sorted(glob.glob(os.path.join(SESS_DIR, "*.jsonl")),
                    key=os.path.getmtime, reverse=True)[:500]
+    # sessions whose last activity is older than STALE_DAYS are dropped everywhere
+    stale_cut = (datetime.datetime.now(datetime.timezone.utc)
+                 - datetime.timedelta(days=STALE_DAYS)).isoformat()
+    closed = _closed_load()
     sessions = []
     for f in files:
         s = _scan_session(f)
         pj = _proj_of(s["cwd"])
         if not pj or not s["ts0"] or s["n"] == 0:
             continue
+        if (s["ts1"] or "") < stale_cut:
+            continue  # untouched for over a week -> gone from both dashboards
         sessions.append(dict(
             id=os.path.basename(f)[:-6],  # filename stem = sessionId
             cwd=s["cwd"], edited=s["edited"],
@@ -721,10 +774,11 @@ def _build_context():
         ))
     sessions.sort(key=lambda x: x["end"], reverse=True)
 
-    # attach cached AI recaps (the background worker keeps these fresh)
+    # attach cached AI recaps (the background worker keeps these fresh) + closed flag
     rcache = _recap_load()
     for s in sessions:
         s["recap"] = (rcache.get(s["id"]) or {}).get("recap")
+        s["closed"] = s["id"] in closed
 
     # resolve topics (hybrid fallback chain) across ALL sessions
     _assign_topics(sessions)
@@ -738,7 +792,7 @@ def _build_context():
             tp["lastActivity"] = s["end"]
         tp["sessions"].append({k: s[k] for k in (
             "id", "project", "label", "branch", "start", "end", "prompt",
-            "lastPrompt", "summary", "msgs", "durationMin", "recap",
+            "lastPrompt", "summary", "msgs", "durationMin", "recap", "closed",
             "ctxTokens", "ctxPct", "ctxPeak", "ctxPeakPct")})
     topic_list = sorted(topics.values(), key=lambda x: x["lastActivity"], reverse=True)
 
@@ -833,8 +887,22 @@ def _reg_save(reg):
 
 
 def _osa(script):
+    # timeout so a busy/unresponsive iTerm (or a pending Automation prompt) can never
+    # hang the request thread indefinitely.
     return subprocess.run(["osascript", "-e", script],
-                          check=True, capture_output=True, text=True).stdout.strip()
+                          check=True, capture_output=True, text=True,
+                          timeout=20).stdout.strip()
+
+
+def _is_running(sid):
+    """True if this session is currently LIVE — a background agent or an already-attached
+    process. `claude --resume` refuses a live session, so we must attach instead of resume.
+    Detected by finding a claude process whose command line carries this session id."""
+    try:
+        r = subprocess.run(["pgrep", "-f", sid], capture_output=True, text=True, timeout=5)
+        return bool(r.stdout.strip())
+    except Exception:
+        return False
 
 
 def _open_in_iterm(sid, cwd):
@@ -869,7 +937,24 @@ def _open_in_iterm(sid, cwd):
         if found == "focused":
             return "focused"
 
-    # 2) otherwise open a fresh tab (or window) and remember its iTerm id
+    # 2) session is currently LIVE (background agent / attached elsewhere)? It can't be
+    #    --resume'd. Open the agents manager so you can find and attach to it instead.
+    if _is_running(sid):
+        cmd = f"cd {shlex.quote(cwd)} && claude agents --cwd {shlex.quote(cwd)}"
+        _osa(f'''
+        tell application "iTerm2"
+          activate
+          if (count of windows) = 0 then
+            set theWin to (create window with default profile)
+          else
+            set theWin to current window
+            tell theWin to create tab with default profile
+          end if
+          tell current session of theWin to write text {json.dumps(cmd)}
+        end tell''')
+        return "running"
+
+    # 3) otherwise open a fresh tab (or window) and remember its iTerm id
     cmd = f"cd {shlex.quote(cwd)} && claude --resume {sid} --permission-mode auto"
     new_id = _osa(f'''
     tell application "iTerm2"
@@ -918,6 +1003,13 @@ def _close_iterm(sid):
 class Handler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *a, **k):
         super().__init__(*a, directory=DIR, **k)
+
+    def end_headers(self):
+        # never let the browser cache the dashboard pages/assets — during active dev a
+        # stale cached focus.html means clicks run old JS. APIs manage their own headers.
+        if not self.path.startswith("/api"):
+            self.send_header("Cache-Control", "no-store, must-revalidate")
+        super().end_headers()
 
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
@@ -973,8 +1065,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not re.fullmatch(r"[0-9a-fA-F-]{36}", sid):
                     return self._json({"error": "invalid session id"}, 400)
                 if is_close:
-                    action = _close_iterm(sid)
-                    return self._json({"ok": True, "action": action, "session": sid})
+                    # close the iTerm tab if we opened it, AND persist the "closed"
+                    # mark so the row greys out with status "closed" (undo via reopen)
+                    undo = bool(body.get("undo"))
+                    action = "reopened" if undo else _close_iterm(sid)
+                    closed = set_closed(sid, undo)
+                    _ctx_cache["at"] = 0  # so the closed/reopened state shows at once
+                    return self._json({"ok": True, "action": action,
+                                       "closed": closed, "session": sid})
                 # open: recover the session's working directory from its log
                 cwd = MP
                 path = os.path.join(SESS_DIR, sid + ".jsonl")
@@ -1039,8 +1137,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 if __name__ == "__main__":
     # background recap worker — generates/refreshes session recaps via `claude -p`
     threading.Thread(target=_recap_worker, daemon=True).start()
-    socketserver.TCPServer.allow_reuse_address = True
-    with socketserver.TCPServer(("127.0.0.1", PORT), Handler) as httpd:
+    # Threaded server: one slow/blocked request (e.g. a hung osascript or usage fetch)
+    # must never freeze the whole dashboard. daemon_threads so it shuts down cleanly.
+    http.server.ThreadingHTTPServer.allow_reuse_address = True
+    http.server.ThreadingHTTPServer.daemon_threads = True
+    with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
         print(f"Dev Dispatch → http://localhost:{PORT}/dev-dispatch.html")
         print(f"[recaps] worker on, every {RECAP_INTERVAL}s via {RECAP_MODEL}")
         httpd.serve_forever()

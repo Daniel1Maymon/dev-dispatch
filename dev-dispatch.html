@@ -611,6 +611,16 @@
   }
   .tsession.unread { box-shadow: inset 3px 0 0 var(--accent); }
   .tsession.read .tprompt { color: var(--ink-faint); }
+  .tsession.closed { background: #e4e0d6; padding-left: 12px; }
+  .tsession.closed .tprompt { color: var(--ink-faint); text-decoration: line-through; text-decoration-color: var(--ink-faint); }
+  .tsession.closed .trecap, .tsession.closed .ctxbar, .tsession.closed .tsub { opacity: .6; }
+  .closed-tag { font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase; color: #fff; background: var(--ink-faint); padding: 2px 7px; margin-right: 8px; vertical-align: middle; }
+  .rop {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid var(--rule); background: none; color: var(--ink-soft);
+    padding: 5px 12px; cursor: pointer; transition: all .2s ease;
+  }
+  .rop:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
   .tsession .tmeta { flex: 1; min-width: 0; }
   .tsession .tprompt { font-size: 16.5px; line-height: 1.45; color: var(--ink); }
   .tsession .tsub {
@@ -738,6 +748,7 @@
   .ctxbar .track i.hot  { background:var(--red); }
   .ctxbar b { color:var(--ink); font-weight:600; }
   .ctxbar b.hot { color:var(--red); }
+  .ctxbar b.danger { color:var(--red); font-weight:800; }
   .rsm {
     font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
     border: 1px solid var(--rule); background: none; color: var(--ink-soft);
@@ -1158,7 +1169,10 @@
       });
       const j = await res.json();
       if(!res.ok || j.error) throw new Error(j.error || res.status);
-      if(btn){ btn.classList.add("go"); btn.textContent = j.action === "focused" ? "✓ focused" : "✓ opened"; }
+      if(btn){ btn.classList.add("go");
+        btn.textContent = j.action === "focused" ? "✓ focused"
+                        : j.action === "running" ? "▸ live — attach in agents"
+                        : "✓ opened"; }
     } catch(e){
       if(btn){ btn.classList.add("err"); btn.textContent = "✗ failed"; btn.title = String(e.message||e); }
     } finally {
@@ -1178,16 +1192,18 @@
       });
       const j = await res.json();
       if(!res.ok || j.error) throw new Error(j.error || res.status);
-      if(btn){
-        if(j.action === "closed"){ btn.classList.add("go"); btn.textContent = "✓ closed"; }
-        else if(j.action === "unknown"){ btn.textContent = "not tracked"; }
-        else { btn.textContent = "not open"; }
-      }
+      // close is persisted server-side — re-render so the row greys out / "closed"
+      await pollContext();
     } catch(e){
-      if(btn){ btn.classList.add("err"); btn.textContent = "✗ failed"; btn.title = String(e.message||e); }
-    } finally {
-      if(btn) setTimeout(()=>{ btn.classList.remove("go","err"); btn.textContent = old; btn.disabled = false; }, 2200);
+      if(btn){ btn.classList.add("err"); btn.textContent = "✗ failed"; btn.title = String(e.message||e);
+        setTimeout(()=>{ btn.classList.remove("err"); btn.textContent = old; btn.disabled = false; }, 2200); }
     }
+  }
+
+  async function reopenSession(sid){
+    try { await fetch("/api/close", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({session: sid, undo: true})}); } catch(e){}
+    await pollContext();
   }
 
   const SRC_NOTE = {repo:"in a repo", files:"grouped by shared files", summary:"grouped by topic", misc:"loose one-offs"};
@@ -1233,9 +1249,12 @@
 
   function ctxChip(pct, tokens){
     if(pct==null) return "";
-    const cls = pct>=75 ? "hot" : pct>=50 ? "warn" : "";
-    const tip = tokens ? `${Math.round(tokens/1000)}k of 1M tokens in context` : "";
-    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${pct}%</b></span>`;
+    const left = Math.max(0, 100 - pct);            // matches the terminal's "context left"
+    const low = left < 20;                          // running out of room
+    const cls = low ? "hot" : pct>=50 ? "warn" : "";
+    const tk = tokens ? Math.round(tokens/1000)+"k" : "—";
+    const tip = `${tk} of 1M tokens used · ${pct}% used · ${left}% left`;
+    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${tk}</b> · <b class="${low?'danger':cls}">${left}%</b> left</span>`;
   }
 
   function renderTopicDetail(){
@@ -1248,9 +1267,9 @@
         <div class="td-meta"><span class="topic-src ${t.source}">${esc(t.source)}</span> ${SRC_NOTE[t.source]||''} · <b>${t.sessionCount}</b> session${t.sessionCount>1?'s':''} · last ${ago(t.lastActivity)} ago${t.unreadCount?`<button class="mrk-all" data-tid="${esc(t.id)}">✓ mark all read</button>`:''}</div>
       </div>
       ${t.sessions.map(s => `
-        <div class="tsession ${s.state==='read'?'read':'unread'}">
+        <div class="tsession ${s.closed?'closed':(s.state==='read'?'read':'unread')}">
           <div class="tmeta">
-            <div class="tprompt">${badge(s.state)}${esc((s.prompt||'').slice(0,200))}…</div>
+            <div class="tprompt">${s.closed?'<span class="closed-tag">✕ closed</span>':badge(s.state)}${esc((s.prompt||'').slice(0,200))}…</div>
             <div class="tsub"><b>${esc(s.id.slice(0,8))}</b> · ${esc(s.project)}${s.label!==s.project&&s.label!=='root'?' / '+esc(s.label):''} · ${s.msgs} exchanges · ${ago(s.end)} ago</div>
             <div style="margin-top:7px">${ctxChip(s.ctxPct, s.ctxTokens)}</div>
             ${s.recap
@@ -1259,13 +1278,16 @@
           </div>
           <div class="tacts">
             <button class="rsm" data-sid="${esc(s.id)}">▶ resume</button>
-            ${s.state!=='read'?`<button class="mrk" data-sid="${esc(s.id)}" data-end="${esc(s.end)}">✓ read</button>`:''}
-            <button class="cls" data-sid="${esc(s.id)}">✕ close</button>
+            ${s.state!=='read'&&!s.closed?`<button class="mrk" data-sid="${esc(s.id)}" data-end="${esc(s.end)}">✓ read</button>`:''}
+            ${s.closed
+              ? `<button class="rop" data-sid="${esc(s.id)}">⤺ reopen</button>`
+              : `<button class="cls" data-sid="${esc(s.id)}">✕ close</button>`}
           </div>
         </div>`).join("")}
     `;
     d.querySelectorAll(".rsm").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); openSession(b.dataset.sid, b); }));
     d.querySelectorAll(".cls").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); closeSession(b.dataset.sid, b); }));
+    d.querySelectorAll(".rop").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); reopenSession(b.dataset.sid); }));
     d.querySelectorAll(".mrk").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); markRead(b.dataset.sid, b.dataset.end, b); }));
     d.querySelectorAll(".mrk-all").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); markTopicRead(b.dataset.tid); }));
   }
