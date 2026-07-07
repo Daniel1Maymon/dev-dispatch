@@ -55,15 +55,31 @@ RECAP_CONCURRENCY = int(os.environ.get("RECAP_CONCURRENCY", "3"))
 ISSUECARD_PATH = os.path.join(STATE_DIR, "issuecards.json")
 ARCHIVE_PATH = os.path.join(STATE_DIR, "archived.json")
 CLOSED_PATH = os.path.join(STATE_DIR, "closed.json")  # sessions you closed (greyed, status "closed")
+# Manual topic edits laid over the automatic grouping: rename a topic, delete/merge one
+# (folding its sessions into another), or move a session to a different topic. Persisted so
+# your organization survives restarts and shows on both dashboards.
+TOPICS_PATH = os.path.join(STATE_DIR, "topics.json")
+# Per-session flags set from the batch (multi-select) actions: "archived" (parked & greyed,
+# hidden from the focus board) and "deleted" (soft-deleted — hidden from BOTH dashboards but
+# fully recoverable from the Trash; the session's .jsonl log on disk is NEVER touched).
+SESSION_FLAGS_PATH = os.path.join(STATE_DIR, "session-flags.json")
 FOCUS_TOPN = int(os.environ.get("FOCUS_TOPN", "3"))         # subjects (topics) to show
 FOCUS_POOL = int(os.environ.get("FOCUS_POOL", "5"))         # subjects to keep cards warm for
 FOCUS_ISSUES = int(os.environ.get("FOCUS_ISSUES", "6"))     # issues (sessions) per subject
 STALE_DAYS = int(os.environ.get("STALE_DAYS", "7"))         # drop sessions untouched this long
 DONE_KEEP_DAYS = int(os.environ.get("DONE_KEEP_DAYS", "7"))  # done sessions vanish this long after
 
-# Context-window size for the per-session "how full is the context" gauge.
-# This account runs the 1M-token window (sessions peak ~730k); override if needed.
-CONTEXT_WINDOW = int(os.environ.get("CONTEXT_WINDOW", "1000000"))
+# Per-session context gauge. Sessions run different model windows (200k standard, or the
+# 1M beta), so we infer the window from the session's own peak usage, then subtract the
+# reserve Claude Code holds back for output — matching the terminal's "% context used".
+# Calibrated to a real session: 155k tokens shown as 86% used -> ~180k effective (200k-20k).
+CTX_RESERVE = int(os.environ.get("CTX_RESERVE", "20000"))    # output/headroom reserve
+
+
+def _ctx_window(peak_tokens):
+    """Effective usable context for this session = its model window minus the reserve."""
+    model_window = 200_000 if (peak_tokens or 0) <= 200_000 else 1_000_000
+    return max(1, model_window - CTX_RESERVE)
 
 
 def _load_read():
@@ -349,6 +365,226 @@ def _assign_topics(sessions):
     return sessions
 
 
+# ----------------------------- manual topic overrides -----------------------------
+# topics.json shape:
+#   {"renames": {key: title}, "merges": {srcKey: dstKey}, "moves": {sessionId: key}}
+_KEY_RE = re.compile(
+    r"^(repo:[A-Za-z0-9 ._+/|-]*|files:[A-Za-z0-9 ._+|-]*|custom:[A-Za-z0-9]+|misc)$")
+_UUID_RE = re.compile(r"[0-9a-fA-F-]{36}")
+
+
+def _topics_load():
+    try:
+        with open(TOPICS_PATH) as fh:
+            d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _topics_save(ov):
+    tmp = TOPICS_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(ov, fh, indent=2, sort_keys=True)
+    os.replace(tmp, TOPICS_PATH)
+
+
+def _derive_title(key):
+    """Best-effort human title for a topic key with no session structurally in it."""
+    if key.startswith("repo:"):
+        repo, _, feat = key[5:].partition("/")
+        return repo + (" · " + feat if feat else "")
+    if key.startswith("files:"):
+        return key[6:].replace("|", " + ")
+    return key
+
+
+def _apply_topic_overrides(sessions):
+    """Overlay the user's manual edits (rename / delete-merge / move) on the structural
+    grouping. Each session already carries _key/_title from _assign_topics."""
+    ov = _topics_load()
+    renames, merges, moves = (ov.get("renames") or {}, ov.get("merges") or {},
+                              ov.get("moves") or {})
+    if not (renames or merges or moves):
+        return
+    nat_title = {s["_key"]: s["_title"] for s in sessions}  # structural titles, pre-edit
+
+    def resolve(k):  # follow the delete/merge chain (cycle-guarded)
+        seen = set()
+        while k in merges and k not in seen:
+            seen.add(k)
+            k = merges[k]
+        return k
+
+    for s in sessions:
+        k = resolve(moves.get(s["id"]) or s["_key"])
+        s["_key"] = k
+        s["_title"] = renames.get(k) or nat_title.get(k) or _derive_title(k)
+
+
+def _valid_key(k):
+    return isinstance(k, str) and bool(_KEY_RE.fullmatch(k))
+
+
+def _clean_title(t):
+    return (t or "").strip()[:80]
+
+
+def _topic_action(action, body):
+    """Apply and persist one topic edit. Raises ValueError on bad input."""
+    ov = _topics_load()
+    renames = ov.setdefault("renames", {})
+    merges = ov.setdefault("merges", {})
+    moves = ov.setdefault("moves", {})
+
+    if action == "rename":
+        key = body.get("key", "")
+        if not _valid_key(key):
+            raise ValueError("invalid topic key")
+        title = _clean_title(body.get("title"))
+        if title:
+            renames[key] = title
+        else:
+            renames.pop(key, None)  # empty -> revert to the automatic name
+        _topics_save(ov)
+        return {"key": key, "title": title}
+
+    if action in ("delete", "merge"):
+        key, target = body.get("key", ""), body.get("target", "")
+        if not _valid_key(key) or not _valid_key(target):
+            raise ValueError("invalid topic key")
+        if target == key:
+            raise ValueError("cannot send a topic into itself")
+        # refuse to create a merge loop (target chaining back to key)
+        t, seen = target, set()
+        while t in merges:
+            if t == key or t in seen:
+                raise ValueError("that would create a topic loop")
+            seen.add(t)
+            t = merges[t]
+        if t == key:
+            raise ValueError("that would create a topic loop")
+        tt = _clean_title(body.get("targetTitle"))
+        if tt:
+            renames[target] = tt  # naming a brand-new destination topic
+        merges[key] = target
+        for sid, k in list(moves.items()):  # sessions moved into the deleted topic follow
+            if k == key:
+                moves[sid] = target
+        renames.pop(key, None)  # the deleted topic's own custom name is gone
+        _topics_save(ov)
+        return {"key": key, "target": target}
+
+    if action == "move":
+        sid = body.get("session", "")
+        if not _UUID_RE.fullmatch(sid or ""):
+            raise ValueError("invalid session id")
+        key = body.get("key", "")
+        if not key:
+            moves.pop(sid, None)  # clear the override -> back to the automatic topic
+        else:
+            if not _valid_key(key):
+                raise ValueError("invalid topic key")
+            tt = _clean_title(body.get("title"))
+            if tt:
+                renames[key] = tt
+            moves[sid] = key
+        _topics_save(ov)
+        return {"session": sid, "key": key}
+
+    raise ValueError("unknown topic action")
+
+
+# ----------------------------- per-session batch flags -----------------------------
+def _sflags_load():
+    try:
+        with open(SESSION_FLAGS_PATH) as fh:
+            d = json.load(fh)
+            return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _sflags_save(d):
+    tmp = SESSION_FLAGS_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh, indent=2, sort_keys=True)
+    os.replace(tmp, SESSION_FLAGS_PATH)
+
+
+def _set_session_flag(sids, flag, on):
+    """Set/clear one flag ("archived" | "deleted") on a batch of session ids."""
+    d = _sflags_load()
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    for sid in sids:
+        rec = d.get(sid) or {}
+        if on:
+            rec[flag] = now
+        else:
+            rec.pop(flag, None)
+        if rec:
+            d[sid] = rec
+        else:
+            d.pop(sid, None)
+    _sflags_save(d)
+
+
+def _move_sessions(sids, key, title):
+    """Batch-move sessions to a topic (key empty -> revert each to its automatic topic)."""
+    ov = _topics_load()
+    moves = ov.setdefault("moves", {})
+    renames = ov.setdefault("renames", {})
+    if not key:
+        for sid in sids:
+            moves.pop(sid, None)
+    else:
+        if not _valid_key(key):
+            raise ValueError("invalid topic key")
+        tt = _clean_title(title)
+        if tt:
+            renames[key] = tt
+        for sid in sids:
+            moves[sid] = key
+    _topics_save(ov)
+
+
+def _sessions_action(action, body):
+    """Apply and persist a batch action over selected sessions. Returns a small summary."""
+    sids = [s for s in (body.get("sessions") or []) if _UUID_RE.fullmatch(s or "")]
+    if not sids:
+        raise ValueError("no valid sessions")
+    if action == "move":
+        _move_sessions(sids, body.get("key", ""), body.get("title"))
+    elif action in ("archive", "unarchive"):
+        _set_session_flag(sids, "archived", action == "archive")
+    elif action in ("delete", "undelete"):
+        _set_session_flag(sids, "deleted", action == "delete")
+    else:
+        raise ValueError("unknown session action")
+    return {"action": action, "count": len(sids)}
+
+
+def _trash_list():
+    """Soft-deleted sessions, for the Trash/restore view. Reads each one's log only to
+    recover a label — the logs themselves are never modified."""
+    flags = _sflags_load()
+    out = []
+    for sid, rec in flags.items():
+        if not rec.get("deleted"):
+            continue
+        path = os.path.join(SESS_DIR, sid + ".jsonl")
+        prompt, project = "", ""
+        if os.path.exists(path):
+            s = _scan_session(path)
+            prompt = (s.get("first") or "")[:120]
+            pj = _proj_of(s.get("cwd"))
+            project = pj[0] if pj else ""
+        out.append({"id": sid, "prompt": prompt, "project": project,
+                    "deletedAt": rec.get("deleted")})
+    out.sort(key=lambda x: x.get("deletedAt") or "", reverse=True)
+    return {"deleted": out, "count": len(out)}
+
+
 def _dur_min(a, b):
     if not a or not b:
         return 0
@@ -632,26 +868,42 @@ def set_archived(subject_key, undo, topics):
     return not undo
 
 
+def _archived_topic_ids(topics):
+    """The set of topic ids currently archived, auto-reviving (and persisting the revive of)
+    any whose sessions gained activity since you archived them."""
+    arch = _archive_load()
+    if not arch:
+        return set()
+    by_id = {t["id"]: t for t in topics}
+    out, changed = set(), False
+    for tid, a in list(arch.items()):
+        t = by_id.get(tid)
+        if t is None:
+            continue  # topic not in this scan (empty/stale) — leave the record untouched
+        if a.get("fp") == _subject_fp(t):
+            out.add(tid)            # still archived — untouched since
+        else:
+            arch.pop(tid, None)     # new activity -> auto-revive
+            changed = True
+    if changed:
+        _archive_save(arch)
+    return out
+
+
 def _eligible_subjects(topics):
     """Filter out stale and archived subjects (auto-reviving any that got new activity)."""
-    arch = _archive_load()
+    archived_ids = _archived_topic_ids(topics)
     stale_cut = (datetime.datetime.now(datetime.timezone.utc)
                  - datetime.timedelta(days=STALE_DAYS)).isoformat()
-    eligible, archived_now, changed = [], [], False
+    eligible, archived_now = [], []
     for t in topics:
         if t["lastActivity"] < stale_cut:
             continue  # staleness gate (objective; nothing saved)
-        a = arch.get(t["id"])
-        if a:
-            if a.get("fp") == _subject_fp(t):
-                archived_now.append({"id": t["id"], "title": t["title"],
-                                     "lastActivity": t["lastActivity"]})
-                continue  # still archived — you haven't touched it since
-            arch.pop(t["id"], None)  # new activity -> auto-revive
-            changed = True
+        if t["id"] in archived_ids:
+            archived_now.append({"id": t["id"], "title": t["title"],
+                                 "lastActivity": t["lastActivity"]})
+            continue  # still archived — you haven't touched it since
         eligible.append(t)
-    if changed:
-        _archive_save(arch)
     return eligible, archived_now
 
 
@@ -666,6 +918,8 @@ def _build_focus():
                 - datetime.timedelta(days=DONE_KEEP_DAYS)).isoformat()
 
     def _keep(s):
+        if s.get("archived"):
+            return False  # parked individually -> off the "right now" board
         # done sessions vanish a week after they were marked done
         if not s.get("closed"):
             return True
@@ -695,6 +949,7 @@ def _build_focus():
                 "recap": s.get("recap"),
                 "ctxTokens": s.get("ctxTokens"),
                 "ctxPct": s.get("ctxPct"),
+                "ctxWindow": s.get("ctxWindow"),
                 "closed": is_closed,
                 "card": card,
             })
@@ -717,6 +972,11 @@ def _build_focus():
         "totalSubjects": len(topics),
         "eligibleSubjects": len(eligible),
         "archived": archived_now,
+        # every topic (id + title) so the move/delete picker can target any of them,
+        # not just the few subjects currently on the board
+        "allTopics": [{"id": t["id"], "title": t["title"], "source": t.get("source"),
+                       "sessionCount": t["sessionCount"], "lastActivity": t["lastActivity"]}
+                      for t in topics],
     }
 
 
@@ -751,8 +1011,12 @@ def _build_context():
     stale_cut = (datetime.datetime.now(datetime.timezone.utc)
                  - datetime.timedelta(days=STALE_DAYS)).isoformat()
     closed = _closed_load()
+    flags = _sflags_load()
     sessions = []
     for f in files:
+        sid = os.path.basename(f)[:-6]  # filename stem = sessionId
+        if (flags.get(sid) or {}).get("deleted"):
+            continue  # soft-deleted -> hidden from both dashboards (log untouched)
         s = _scan_session(f)
         pj = _proj_of(s["cwd"])
         if not pj or not s["ts0"] or s["n"] == 0:
@@ -760,7 +1024,8 @@ def _build_context():
         if (s["ts1"] or "") < stale_cut:
             continue  # untouched for over a week -> gone from both dashboards
         sessions.append(dict(
-            id=os.path.basename(f)[:-6],  # filename stem = sessionId
+            id=sid,
+            archivedSelf=bool((flags.get(sid) or {}).get("archived")),
             cwd=s["cwd"], edited=s["edited"],
             project=pj[0], label=pj[1], isRoot=pj[2],
             branch=s["branch"], start=s["ts0"], end=s["ts1"],
@@ -769,8 +1034,9 @@ def _build_context():
             lastPrompt=(s["last"] or "")[:200],
             summary=s["summary"], msgs=s["n"],
             ctxTokens=s["ctxTokens"], ctxPeak=s["ctxPeak"],
-            ctxPct=round(s["ctxTokens"] / CONTEXT_WINDOW * 100),
-            ctxPeakPct=round(s["ctxPeak"] / CONTEXT_WINDOW * 100),
+            ctxWindow=_ctx_window(s["ctxPeak"]),
+            ctxPct=min(100, round(s["ctxTokens"] / _ctx_window(s["ctxPeak"]) * 100)),
+            ctxPeakPct=min(100, round(s["ctxPeak"] / _ctx_window(s["ctxPeak"]) * 100)),
         ))
     sessions.sort(key=lambda x: x["end"], reverse=True)
 
@@ -780,8 +1046,9 @@ def _build_context():
         s["recap"] = (rcache.get(s["id"]) or {}).get("recap")
         s["closed"] = s["id"] in closed
 
-    # resolve topics (hybrid fallback chain) across ALL sessions
+    # resolve topics (hybrid fallback chain) across ALL sessions, then overlay manual edits
     _assign_topics(sessions)
+    _apply_topic_overrides(sessions)
     topics = {}
     for s in sessions:
         tp = topics.setdefault(s["_key"], dict(
@@ -793,8 +1060,19 @@ def _build_context():
         tp["sessions"].append({k: s[k] for k in (
             "id", "project", "label", "branch", "start", "end", "prompt",
             "lastPrompt", "summary", "msgs", "durationMin", "recap", "closed",
-            "ctxTokens", "ctxPct", "ctxPeak", "ctxPeakPct")})
+            "archivedSelf", "ctxTokens", "ctxPct", "ctxPeak", "ctxPeakPct", "ctxWindow")})
     topic_list = sorted(topics.values(), key=lambda x: x["lastActivity"], reverse=True)
+
+    # archive state: archiving a topic puts the WHOLE topic — and every session in it —
+    # into archive mode. Annotate both so the dashboard greys them and sorts them down.
+    archived_ids = _archived_topic_ids(topic_list)
+    for t in topic_list:
+        t["archived"] = t["id"] in archived_ids  # whole-topic archive
+        for st in t["sessions"]:
+            # a session is archived if its topic is, OR it was archived individually
+            st["archived"] = t["archived"] or st.get("archivedSelf", False)
+    for s in sessions:
+        s["archived"] = (s["_key"] in archived_ids) or s.get("archivedSelf", False)
 
     # aggregate projects (skip the bare MyProjects root — those are meta chats)
     week_ago = (datetime.datetime.now(datetime.timezone.utc) -
@@ -1037,7 +1315,32 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                     return self._json({"error": "missing subject"}, 400)
                 topics = _build_context().get("topics") or []
                 archived = set_archived(key, bool(body.get("undo")), topics)
+                _ctx_cache["at"] = 0  # so both dashboards show the archive at once
                 return self._json({"ok": True, "subject": key, "archived": archived})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+        if self.path.startswith("/api/topic/"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                action = self.path[len("/api/topic/"):].strip("/")
+                result = _topic_action(action, body)
+                _ctx_cache["at"] = 0  # so the new grouping shows on the next poll
+                return self._json({"ok": True, **result})
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+        if self.path.startswith("/api/sessions/"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                action = self.path[len("/api/sessions/"):].strip("/")
+                result = _sessions_action(action, body)
+                _ctx_cache["at"] = 0
+                return self._json({"ok": True, **result})
+            except ValueError as e:
+                return self._json({"error": str(e)}, 400)
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
         if self.path.startswith("/api/read"):
@@ -1111,6 +1414,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/context"):
             try:
                 self._json(_apply_read_state(_build_context()))
+            except Exception as e:
+                self._json({"error": str(e)}, 502)
+            return
+        if self.path.startswith("/api/trash"):
+            try:
+                self._json(_trash_list())
             except Exception as e:
                 self._json({"error": str(e)}, 502)
             return

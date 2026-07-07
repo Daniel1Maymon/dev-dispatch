@@ -195,6 +195,9 @@
   .issue-foot { display:flex; justify-content:space-between; align-items:center; gap:12px; }
   .issue-foot .left { display:flex; align-items:center; gap:14px; min-width:0; flex-wrap:wrap; }
   .issue-foot .meta { font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); letter-spacing:.03em; }
+  .copy-sid { font-size:11px; font-family:var(--mono); color:var(--ink-faint); background:none; border:1px solid var(--rule); border-radius:3px; padding:1px 5px; cursor:pointer; opacity:.7; transition:opacity .15s,color .15s; }
+  .copy-sid:hover { opacity:1; color:var(--ink-soft); }
+  .copy-sid.copied { color:var(--green); border-color:var(--green); opacity:1; }
   .issue-foot .times { display:inline-flex; gap:12px; font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); letter-spacing:.03em; }
   .issue-foot .times span { cursor:default; }
   .issue-foot .times span:last-child { color:var(--ink-soft); }
@@ -223,6 +226,68 @@
   }
   .everything:hover { background:var(--paper-card); border-color:var(--ink-faint); color:var(--ink); }
   .empty { font-family:var(--mono); font-size:13px; color:var(--ink-faint); padding:30px 0; text-align:center; }
+
+  /* ---------- topic management: edit/delete tools + move + picker modal ---------- */
+  .subj-tools { display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end; }
+  .tbtn {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase;
+    border:1px solid var(--rule); background:none; color:var(--ink-faint); padding:4px 10px;
+    cursor:pointer; transition:all .2s ease;
+  }
+  .tbtn:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .tbtn.danger:hover { background:var(--red); color:#fff; border-color:var(--red); }
+  .mv {
+    font-family:var(--mono); font-size:12px; letter-spacing:.06em; text-transform:uppercase; font-weight:500;
+    border:1px solid var(--rule); background:none; color:var(--ink-faint); padding:6px 12px; cursor:pointer; transition:all .2s ease;
+  }
+  .mv:hover { background:var(--sky); color:#fff; border-color:var(--sky); }
+
+  .modal-bg {
+    position:fixed; inset:0; z-index:10000; background:rgba(29,26,21,.46);
+    display:none; align-items:center; justify-content:center; padding:24px;
+  }
+  .modal-bg.on { display:flex; }
+  .modal {
+    background:var(--paper-card); border:1px solid var(--ink); box-shadow:var(--shadow);
+    width:min(460px,100%); max-height:82vh; display:flex; flex-direction:column;
+  }
+  .modal h4 {
+    font-family:var(--serif); font-weight:600; font-size:23px; letter-spacing:-.01em;
+    line-height:1.2; padding:22px 26px 15px; border-bottom:1px solid var(--rule);
+  }
+  .modal .mbody { padding:6px 0; overflow-y:auto; }
+  .modal-row {
+    padding:13px 26px; cursor:pointer; border-bottom:1px dotted var(--rule-soft);
+    display:flex; align-items:baseline; gap:11px; font-size:16px;
+  }
+  .modal-row:hover { background:var(--paper-2); }
+  .modal-row .mr-sub { font-family:var(--mono); font-size:11px; color:var(--ink-faint); margin-left:auto; }
+  .modal .mnew { padding:15px 26px; border-top:1px solid var(--rule); display:flex; gap:9px; }
+  .modal .mtext {
+    flex:1; font-family:var(--sans); font-size:16px; padding:10px 13px;
+    border:1px solid var(--rule); background:var(--paper); color:var(--ink);
+  }
+  .modal .mtext:focus { outline:none; border-color:var(--accent); }
+  .modal .mbtn {
+    font-family:var(--mono); font-size:12px; font-weight:500; letter-spacing:.08em; text-transform:uppercase;
+    padding:10px 16px; cursor:pointer; border:1px solid var(--ink); background:var(--ink); color:var(--paper); transition:all .2s ease;
+  }
+  .modal .mbtn:hover { background:var(--accent); border-color:var(--accent); }
+  .modal .mbtn.ghost { background:none; color:var(--ink); }
+  .modal .mbtn.ghost:hover { background:var(--ink); color:var(--paper); }
+  .modal-foot { display:flex; gap:10px; justify-content:flex-end; padding:15px 26px; border-top:1px solid var(--rule); }
+
+  /* multi-select: per-issue checkbox + batch bar */
+  .selbox { width:15px; height:15px; flex-shrink:0; cursor:pointer; accent-color:var(--accent); align-self:center; }
+  .batchbar { display:flex; align-items:center; gap:10px; background:var(--ink); color:var(--paper); padding:10px 14px; margin-bottom:16px; }
+  .batchbar .bb-count { font-family:var(--mono); font-size:12px; letter-spacing:.06em; }
+  .bb-btn {
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.08em; text-transform:uppercase;
+    border:1px solid var(--paper); background:none; color:var(--paper); padding:5px 11px; cursor:pointer; transition:all .2s ease;
+  }
+  .bb-btn:hover { background:var(--paper); color:var(--ink); }
+  .bb-btn.danger:hover { background:var(--red); color:#fff; border-color:var(--red); }
+  .bb-btn.ghost { border-color:var(--ink-faint); color:#c7bda6; margin-left:auto; }
 </style>
 </head>
 <body>
@@ -274,12 +339,22 @@
     </div>
 
     <div class="board-h">Active subjects <span class="n" id="boardN"></span></div>
+    <div class="batchbar" id="batchBar" style="display:none">
+      <span class="bb-count" id="bbCount"></span>
+      <button class="bb-btn" data-batch="move">⇄ move</button>
+      <button class="bb-btn" data-batch="archive">⊟ archive</button>
+      <button class="bb-btn danger" data-batch="delete">🗑 delete</button>
+      <button class="bb-btn ghost" data-batch="clear">clear selection</button>
+    </div>
     <div id="board"><div class="issue-pending">Working out where each thing stands…</div></div>
 
     <div id="archived"></div>
 
     <a class="everything" href="/dev-dispatch.html">▾ everything else — all sessions · projects · usage</a>
   </div>
+
+  <!-- topic edit/delete/move picker -->
+  <div class="modal-bg" id="modalBg"><div class="modal" id="modalBox"></div></div>
 
 <script>
   const $ = id => document.getElementById(id);
@@ -294,6 +369,29 @@
     if(s < 3600) return Math.round(s/60)+"m ago";
     if(s < 86400) return Math.round(s/3600)+"h ago";
     return Math.round(s/86400)+"d ago";
+  }
+
+  function copySid(btn){
+    const sid = btn.dataset.copySid;
+    if(!sid) return;
+    const flash = ok => {
+      btn.classList.add("copied"); btn.textContent = ok ? "✓ copied" : "✗ failed";
+      setTimeout(() => { btn.classList.remove("copied"); btn.textContent = "copy id"; }, 1500);
+    };
+    if(navigator.clipboard){
+      navigator.clipboard.writeText(sid).then(() => flash(true), () => fallback(sid) ? flash(true) : flash(false));
+    } else {
+      flash(fallback(sid));
+    }
+  }
+  function fallback(text){
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove(); return ok;
+    } catch(e){ return false; }
   }
 
   async function openSession(sid, btn){
@@ -351,42 +449,205 @@
     if(resetTimers.sess) $("sessReset").innerHTML = "resets in <b>"+countdown(resetTimers.sess)+"</b><br/>"+localTime(resetTimers.sess);
     if(resetTimers.week) $("weekReset").innerHTML = "resets in <b>"+countdown(resetTimers.week)+"</b><br/>"+localTime(resetTimers.week);
   }, 1000);
+  let usageRetry = null;
   async function pollUsage(){
     try {
       const r = await fetch("/api/usage", {cache:"no-store"});
       if(!r.ok) throw new Error(r.status);
       renderUsage(await r.json());
+      if(usageRetry){ clearTimeout(usageRetry); usageRetry = null; }
     } catch(e){
       const tag = $("liveTag"); tag.classList.add("stale"); tag.textContent = "● offline";
-      $("sessFoot").textContent = "can't reach usage server";
+      $("sessFoot").textContent = "reconnecting to usage server…";
+      if(!usageRetry) usageRetry = setTimeout(() => { usageRetry = null; pollUsage(); }, 4000);
     }
   }
 
-  function ctxChip(pct, tokens){
-    if(pct==null) return "";
-    const left = Math.max(0, 100 - pct);            // matches the terminal's "context left"
-    const low = left < 20;                          // running out of room
+  function ctxChip(pct, tokens, window){
+    if(pct==null) return "";              // pct = % USED of this session's effective window
+    const left = Math.max(0, 100 - pct);
+    const low = left < 20;                // <20% left = almost full
     const cls = low ? "hot" : pct>=50 ? "warn" : "";
     const tk = tokens ? Math.round(tokens/1000)+"k" : "—";
-    const tip = `${tk} of 1M tokens used · ${pct}% used · ${left}% left`;
-    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${tk}</b> · <b class="${low?'danger':cls}">${left}%</b> left</span>`;
+    const win = window ? Math.round(window/1000)+"k" : "?";
+    const tip = `${tk} of ~${win} usable context (model window minus output reserve, inferred) · ${pct}% used · ${left}% left`;
+    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${low?'danger':cls}">${tk}/${win} · ${pct}%</b></span>`;
   }
 
-  function renderIssue(i){
+  // ---------- modal (text prompt + topic picker) ----------
+  let ALL_TOPICS = [];   // every topic (id+title), for the move/delete destination picker
+  let SELECTED_SIDS = new Set();   // session ids ticked for a batch action
+  const modalBg = $("modalBg"), modalBox = $("modalBox");
+  let modalResolve = null;
+  function closeModal(val){
+    modalBg.classList.remove("on");
+    const r = modalResolve; modalResolve = null;
+    if(r) r(val);
+  }
+  modalBg.addEventListener("click", e => { if(e.target === modalBg) closeModal(null); });
+  document.addEventListener("keydown", e => { if(e.key === "Escape" && modalBg.classList.contains("on")) closeModal(null); });
+
+  function promptModal(title, value){
+    return new Promise(res => {
+      modalResolve = res;
+      modalBox.innerHTML = `
+        <h4>${esc(title)}</h4>
+        <div class="mnew" style="border-top:none"><input class="mtext" id="mInput" value="${esc(value||'')}" /></div>
+        <div class="modal-foot">
+          <button class="mbtn ghost" id="mCancel">Cancel</button>
+          <button class="mbtn" id="mOk">Save</button>
+        </div>`;
+      modalBg.classList.add("on");
+      const inp = $("mInput"); inp.focus(); inp.select();
+      const ok = () => closeModal(inp.value.trim());
+      $("mOk").onclick = ok;
+      $("mCancel").onclick = () => closeModal(null);
+      inp.addEventListener("keydown", e => { if(e.key === "Enter") ok(); });
+    });
+  }
+
+  async function pickTopic(title, excludeId){
+    // pull the authoritative full topic list fresh so EVERY topic is listed,
+    // not just the few subjects currently on the board
+    let topics = ALL_TOPICS;
+    try {
+      const d = await (await fetch("/api/context", {cache:"no-store"})).json();
+      if(d && Array.isArray(d.topics) && d.topics.length) topics = d.topics;
+    } catch(e){}
+    return new Promise(res => {
+      modalResolve = res;
+      const rows = topics.filter(t => t.id !== excludeId).map(t => `
+        <div class="modal-row" data-id="${esc(t.id)}" data-title="${esc(t.title)}">
+          ${esc(t.title)}
+          <span class="mr-sub">${t.sessionCount} session${t.sessionCount>1?'s':''} · ${ago(t.lastActivity)} ago</span>
+        </div>`).join("");
+      modalBox.innerHTML = `
+        <h4>${esc(title)}</h4>
+        <div class="mbody">${rows || '<div style="padding:14px 26px;color:var(--ink-faint);font-family:var(--mono);font-size:12px">No other topics yet — type a new one below.</div>'}
+          <div id="mNone" style="display:none;padding:14px 26px;color:var(--ink-faint);font-family:var(--mono);font-size:12px">No topic matches — hit Create to make it new.</div>
+        </div>
+        <div class="mnew">
+          <input class="mtext" id="mNew" placeholder="type to filter… or name a new topic" />
+          <button class="mbtn" id="mCreate">Create</button>
+        </div>
+        <div class="modal-foot"><button class="mbtn ghost" id="mCancel2">Cancel</button></div>`;
+      modalBg.classList.add("on");
+      modalBox.querySelectorAll(".modal-row").forEach(el =>
+        el.addEventListener("click", () => closeModal({key: el.dataset.id, title: el.dataset.title, isNew: false})));
+      const inp = $("mNew");
+      // live filter: show only topics whose title contains what you typed
+      const filterRows = () => {
+        const q = inp.value.trim().toLowerCase();
+        let shown = 0;
+        modalBox.querySelectorAll(".modal-row").forEach(el => {
+          const hit = !q || (el.dataset.title || "").toLowerCase().includes(q);
+          el.style.display = hit ? "" : "none";
+          if(hit) shown++;
+        });
+        const none = $("mNone");
+        if(none) none.style.display = (q && !shown) ? "" : "none";
+      };
+      const create = () => {
+        const v = inp.value.trim();
+        if(!v) return;
+        closeModal({key: "custom:" + Date.now().toString(36), title: v, isNew: true});
+      };
+      $("mCreate").onclick = create;
+      inp.addEventListener("input", filterRows);
+      inp.addEventListener("keydown", e => { if(e.key === "Enter") create(); });
+      inp.focus();
+      $("mCancel2").onclick = () => closeModal(null);
+    });
+  }
+
+  // ---------- topic edits (persisted server-side, then re-render) ----------
+  async function renameTopic(tid){
+    const t = ALL_TOPICS.find(x => x.id === tid);
+    const title = await promptModal("Rename topic", t ? t.title : "");
+    if(title === null) return;
+    try {
+      await fetch("/api/topic/rename", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, title})});
+      await pollFocus();
+    } catch(e){}
+  }
+  async function deleteTopic(tid){
+    const t = ALL_TOPICS.find(x => x.id === tid);
+    const n = t ? t.sessionCount : 0;
+    const dest = await pickTopic(`Delete “${t?t.title:''}” — send its ${n} session${n>1?'s':''} to:`, tid);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, target: dest.key, targetTitle: dest.isNew ? dest.title : ""})});
+      await pollFocus();
+    } catch(e){}
+  }
+  async function moveSession(sid, subjId){
+    const dest = await pickTopic("Move this session to:", subjId);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/move", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session: sid, key: dest.key, title: dest.isNew ? dest.title : ""})});
+      await pollFocus();
+    } catch(e){}
+  }
+  async function mergeTopic(tid){
+    const t = ALL_TOPICS.find(x => x.id === tid);
+    const dest = await pickTopic(`Merge “${t?t.title:''}” into:`, tid);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/merge", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, target: dest.key, targetTitle: dest.isNew ? dest.title : ""})});
+      await pollFocus();
+    } catch(e){}
+  }
+
+  // ---------- multi-select batch actions over sessions ----------
+  function renderBatchBar(){
+    const bar = $("batchBar"); if(!bar) return;
+    const n = SELECTED_SIDS.size;
+    bar.style.display = n ? "flex" : "none";
+    const c = $("bbCount"); if(c) c.textContent = n + " selected";
+  }
+  async function batchAction(kind){
+    if(kind === "clear"){ SELECTED_SIDS.clear(); pollFocus(); return; }
+    const sids = [...SELECTED_SIDS];
+    if(!sids.length) return;
+    try {
+      if(kind === "move"){
+        const dest = await pickTopic(`Move ${sids.length} session${sids.length>1?'s':''} to:`, null);
+        if(!dest) return;
+        await fetch("/api/sessions/move", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids, key: dest.key, title: dest.isNew ? dest.title : ""})});
+      } else if(kind === "archive"){
+        await fetch("/api/sessions/archive", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids})});
+      } else if(kind === "delete"){
+        if(!confirm(`Delete ${sids.length} session${sids.length>1?'s':''}? They move to Trash (on the full dashboard) — recoverable, and the logs are never touched.`)) return;
+        await fetch("/api/sessions/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids})});
+      }
+      SELECTED_SIDS.clear();
+      await pollFocus();
+    } catch(e){}
+  }
+
+  function renderIssue(i, subjId){
     const c = i.card;
     const st = i.closed ? "closed" : ((c && c.status) || "in_progress");
     const closeBtn = i.closed
       ? `<button class="closebtn undo" data-sid="${esc(i.id)}">⤺ undo</button>`
       : `<button class="closebtn" data-sid="${esc(i.id)}">✓ done</button>`;
     const head = `<div class="issue-head">
+        <input type="checkbox" class="selbox" data-sid="${esc(i.id)}" ${SELECTED_SIDS.has(i.id)?'checked':''} title="select for a batch action" />
         <span class="issue-dot s-${st}">${STATUS_DOT[st]||'●'}</span>
         <span class="issue-title">${esc((c && c.issue) || (i.recap||'').slice(0,50) || 'this session')}</span>
         <span class="issue-status s-${st}">${STATUS_LABEL[st]||st}</span>
       </div>`;
     const foot = `<div class="issue-foot">
         <div class="left">
-          ${ctxChip(i.ctxPct, i.ctxTokens)}
-          <span class="meta">${esc(i.id.slice(0,8))} · ${i.msgs} exch</span>
+          ${ctxChip(i.ctxPct, i.ctxTokens, i.ctxWindow)}
+          <span class="meta" title="${esc(i.id)}">${esc(i.id.slice(0,8))}</span><button class="copy-sid" data-copy-sid="${esc(i.id)}">copy id</button><span class="meta"> · ${i.msgs} exch</span>
           <span class="times">
             <span title="created ${absTime(i.start)}">⊙ created ${ago(i.start)}</span>
             <span title="last prompt ${absTime(i.end)}">✎ last ${ago(i.end)}</span>
@@ -394,6 +655,7 @@
         </div>
         <div class="issue-acts">
           <button class="resume" data-sid="${esc(i.id)}">▶ resume</button>
+          <button class="mv" data-move="${esc(i.id)}" data-subj="${esc(subjId||'')}">⇄ move</button>
           ${closeBtn}
         </div>
       </div>`;
@@ -424,16 +686,22 @@
         <div class="subj-proj">${esc(s.project||'')} · ${s.issueCount} issue${s.issueCount>1?'s':''}${s.sessionCount>s.issueCount?` of ${s.sessionCount}`:''}</div></div>
         <div class="subj-actions">
           <span class="status s-${st}">${STATUS_DOT[st]||'●'} ${STATUS_LABEL[st]||st}</span>
-          <button class="archive-btn" data-key="${esc(s.id)}" title="Archive the WHOLE subject — it comes back automatically if you work on it again">⊟ archive subject</button>
+          <div class="subj-tools">
+            <button class="tbtn" data-rename="${esc(s.id)}">✎ rename</button>
+            <button class="tbtn" data-merge="${esc(s.id)}" title="Merge this subject into another — their sessions combine">⤳ merge</button>
+            <button class="tbtn danger" data-delete="${esc(s.id)}">⌦ delete</button>
+            <button class="archive-btn" data-key="${esc(s.id)}" title="Archive the WHOLE subject — its sessions go with it, and it returns automatically if you work on it again">⊟ archive</button>
+          </div>
         </div>
       </div>
-      ${(s.issues||[]).map(renderIssue).join("")}
+      ${(s.issues||[]).map(i => renderIssue(i, s.id)).join("")}
     </div>`;
   }
 
   async function pollFocus(){
     let d;
     try { d = await (await fetch("/api/focus")).json(); } catch(e){ return; }
+    ALL_TOPICS = d.allTopics || [];
     const subs = d.subjects || [];
     $("sub").innerHTML = subs.length
       ? `<span class="pill">${subs.length}</span> subject${subs.length>1?'s':''} in flight · ${d.totalSubjects} topics tracked`
@@ -457,6 +725,21 @@
       b.addEventListener("click", () => closeIssue(b.dataset.sid, b.classList.contains("undo"), b)));
     $("board").querySelectorAll(".archive-btn").forEach(b =>
       b.addEventListener("click", () => archiveSubject(b.dataset.key, false, b)));
+    $("board").querySelectorAll("[data-rename]").forEach(b =>
+      b.addEventListener("click", () => renameTopic(b.dataset.rename)));
+    $("board").querySelectorAll("[data-merge]").forEach(b =>
+      b.addEventListener("click", () => mergeTopic(b.dataset.merge)));
+    $("board").querySelectorAll("[data-delete]").forEach(b =>
+      b.addEventListener("click", () => deleteTopic(b.dataset.delete)));
+    $("board").querySelectorAll(".mv").forEach(b =>
+      b.addEventListener("click", () => moveSession(b.dataset.move, b.dataset.subj)));
+    $("board").querySelectorAll(".selbox").forEach(b => b.addEventListener("change", () => {
+      if(b.checked) SELECTED_SIDS.add(b.dataset.sid); else SELECTED_SIDS.delete(b.dataset.sid);
+      renderBatchBar();
+    }));
+    $("board").querySelectorAll(".copy-sid").forEach(b =>
+      b.addEventListener("click", e => { e.stopPropagation(); copySid(b); }));
+    renderBatchBar();
 
     renderArchived(d.archived || []);
   }
@@ -520,6 +803,8 @@
   }
 
   $("refreshBtn").addEventListener("click", refreshNow);
+  document.querySelectorAll("#batchBar [data-batch]").forEach(b =>
+    b.addEventListener("click", () => batchAction(b.dataset.batch)));
   pollUsage(); pollFocus();
   setInterval(pollFocus, 60000);
   setInterval(pollUsage, 90000);

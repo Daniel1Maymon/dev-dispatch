@@ -674,6 +674,104 @@
   }
   .mrk-all:hover { background: var(--green); color: #fff; border-color: var(--green); }
 
+  /* topic management: edit/delete tools + move-session + picker modal */
+  .td-tools { display: flex; gap: 8px; margin-top: 14px; }
+  .tbtn {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid var(--rule); background: none; color: var(--ink-soft);
+    padding: 5px 11px; cursor: pointer; transition: all .2s ease;
+  }
+  .tbtn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .tbtn.danger:hover { background: var(--red); border-color: var(--red); }
+  .mv {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid var(--rule); background: none; color: var(--ink-soft);
+    padding: 5px 12px; cursor: pointer; transition: all .2s ease;
+  }
+  .mv:hover { background: var(--sky); color: #fff; border-color: var(--sky); }
+
+  .modal-bg {
+    position: fixed; inset: 0; z-index: 10000; background: rgba(29,26,21,.46);
+    display: none; align-items: center; justify-content: center; padding: 24px;
+  }
+  .modal-bg.on { display: flex; }
+  .modal {
+    background: var(--paper-card); border: 1px solid var(--ink); box-shadow: var(--shadow);
+    width: min(460px, 100%); max-height: 82vh; display: flex; flex-direction: column;
+  }
+  .modal h4 {
+    font-family: var(--serif); font-weight: 600; font-size: 23px; letter-spacing: -.01em;
+    line-height: 1.2; padding: 22px 26px 15px; border-bottom: 1px solid var(--rule);
+  }
+  .modal .mbody { padding: 6px 0; overflow-y: auto; }
+  .modal-row {
+    padding: 13px 26px; cursor: pointer; border-bottom: 1px dotted var(--rule-soft);
+    display: flex; align-items: baseline; gap: 11px; font-size: 16px;
+  }
+  .modal-row:hover { background: var(--paper-2); }
+  .modal-row .mr-sub { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); margin-left: auto; }
+  .modal .mnew { padding: 15px 26px; border-top: 1px solid var(--rule); display: flex; gap: 9px; }
+  .modal .mtext {
+    flex: 1; font-family: var(--sans); font-size: 16px; padding: 10px 13px;
+    border: 1px solid var(--rule); background: var(--paper); color: var(--ink);
+  }
+  .modal .mtext:focus { outline: none; border-color: var(--accent); }
+  .modal-foot { display: flex; gap: 10px; justify-content: flex-end; padding: 15px 26px; border-top: 1px solid var(--rule); }
+
+  /* archived topics: greyed in the menu + a badge, and their sessions wear the same mode */
+  .tm-item.archived { opacity: .6; background: var(--paper-2); }
+  .tm-item.archived h5 { color: var(--ink-faint); }
+  .tm-arch, .td-arch {
+    font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: .12em;
+    text-transform: uppercase; color: #fff; background: var(--ink-faint);
+    border-radius: 2px; padding: 1px 6px; margin-left: 6px; vertical-align: middle;
+  }
+  .tbtn.on { background: var(--ink-faint); color: #fff; border-color: var(--ink-faint); }
+  .tsession.archived { background: #e4e0d6; }
+  .tsession.archived .tprompt { color: var(--ink-faint); }
+  .tsession.archived .trecap, .tsession.archived .ctxbar, .tsession.archived .tsub { opacity: .6; }
+  .arch-tag {
+    font-family: var(--mono); font-size: 11px; font-weight: 600; letter-spacing: .08em;
+    text-transform: uppercase; color: #fff; background: var(--ink-faint);
+    padding: 2px 7px; margin-right: 8px; vertical-align: middle;
+  }
+  .del-tag { background: var(--red); }
+
+  /* multi-select: per-row checkbox + sticky batch bar */
+  .selbox { width: 16px; height: 16px; margin-top: 4px; flex-shrink: 0; cursor: pointer; accent-color: var(--accent); }
+  .batchbar {
+    position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 10px;
+    background: var(--ink); color: var(--paper); padding: 10px 14px; margin-bottom: 12px;
+  }
+  .batchbar .bb-count { font-family: var(--mono); font-size: 12px; letter-spacing: .06em; }
+  .bb-btn {
+    font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em; text-transform: uppercase;
+    border: 1px solid var(--paper); background: none; color: var(--paper); padding: 5px 11px;
+    cursor: pointer; transition: all .2s ease;
+  }
+  .bb-btn:hover { background: var(--paper); color: var(--ink); }
+  .bb-btn.danger:hover { background: var(--red); color: #fff; border-color: var(--red); }
+  .bb-btn.ghost { border-color: var(--ink-faint); color: #c7bda6; margin-left: auto; }
+
+  /* Trash (soft-deleted sessions, recoverable) */
+  .trash-wrap { border: 1px dashed var(--rule); background: var(--paper-2); margin-top: 18px; }
+  .trash-h {
+    font-family: var(--mono); font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--ink-faint); padding: 13px 18px; cursor: pointer; user-select: none;
+  }
+  .trash-h:hover { color: var(--ink); }
+  .trash-list { display: none; padding: 0 18px 10px; }
+  .trash-list.open { display: block; }
+  .trash-row { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px dotted var(--rule); }
+  .trash-row .tr-txt { font-size: 14px; color: var(--ink-soft); min-width: 0; }
+  .trash-row .tr-txt b { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); }
+  .restore-btn {
+    font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase;
+    border: 1px solid var(--rule); background: none; color: var(--ink-soft); padding: 5px 12px;
+    cursor: pointer; transition: all .2s ease; flex-shrink: 0;
+  }
+  .restore-btn:hover { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
   @media (max-width: 760px) {
     .topics-shell { grid-template-columns: 1fr; }
     .topic-menu { max-height: 210px; border-right: none; border-bottom: 1px solid var(--rule); }
@@ -741,6 +839,9 @@
   .tl .ctx { font-family: var(--mono); font-size: 13px; color: var(--ink-faint); margin-top: 4px;}
   .tl-foot { display: flex; align-items: center; gap: 11px; margin-top: 8px; }
   .sid { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); letter-spacing: .04em; }
+  .copy-sid { font-size: 11px; font-family: var(--mono); color: var(--ink-faint); background: none; border: 1px solid var(--rule); border-radius: 3px; padding: 1px 5px; cursor: pointer; opacity: .7; transition: opacity .15s, color .15s; }
+  .copy-sid:hover { opacity: 1; color: var(--ink-soft); }
+  .copy-sid.copied { color: var(--green); border-color: var(--green); opacity: 1; }
   .ctxbar { display:inline-flex; align-items:center; gap:6px; font-family:var(--mono); font-size:11px; color:var(--ink-soft); letter-spacing:.02em; }
   .ctxbar .track { width:58px; height:7px; background:var(--paper-2); border:1px solid var(--rule); position:relative; overflow:hidden; }
   .ctxbar .track i { position:absolute; left:0; top:0; bottom:0; background:var(--green); }
@@ -1000,6 +1101,7 @@
     </nav>
     <div class="topic-detail" id="topicDetail"></div>
   </section>
+  <div id="trash"></div>
 
   <!-- ===================== LOG + THREADS ===================== -->
   <section class="duo">
@@ -1022,6 +1124,9 @@
   </footer>
 
 </div>
+
+<!-- topic edit/delete/move picker -->
+<div class="modal-bg" id="modalBg"><div class="modal" id="modalBox"></div></div>
 
 <script>
   // ---------- live masthead clock + dates ----------
@@ -1120,15 +1225,19 @@
     if(resetTimers.week) $("weekReset").innerHTML = "resets in <b>"+countdown(resetTimers.week)+"</b><br/>"+localTime(resetTimers.week);
   }, 1000);
 
+  let usageRetry = null;
   async function pollUsage(){
     try {
       const r = await fetch("/api/usage", {cache:"no-store"});
       if(!r.ok) throw new Error(r.status);
       render(await r.json());
+      if(usageRetry){ clearTimeout(usageRetry); usageRetry = null; }   // recovered
     } catch(e){
       const tag = $("liveTag");
       tag.classList.add("stale"); tag.textContent = "● offline";
-      $("sessFoot").textContent = "can't reach usage server — run refresh-usage.sh or start usage-server.py";
+      $("sessFoot").textContent = "reconnecting to usage server…";
+      // a blip (e.g. server restart) shouldn't strand the band for 60s — retry soon
+      if(!usageRetry) usageRetry = setTimeout(() => { usageRetry = null; pollUsage(); }, 4000);
     }
   }
   pollUsage();
@@ -1155,6 +1264,7 @@
   let RESUME = null;
   let TOPICS = [];
   let SELECTED = null;   // currently selected topic id (persists across refresh)
+  let SELECTED_SIDS = new Set();   // session ids ticked for a batch action
 
   // POST a session id to the local server, which opens Terminal at its cwd
   // running `claude --resume <id>`. Browsers can't exec; the server does.
@@ -1235,26 +1345,224 @@
     } catch(e){}
   }
 
+  // ---------- modal (text prompt + topic picker) ----------
+  const modalBg = $("modalBg"), modalBox = $("modalBox");
+  let modalResolve = null;
+  function closeModal(val){
+    modalBg.classList.remove("on");
+    const r = modalResolve; modalResolve = null;
+    if(r) r(val);
+  }
+  modalBg.addEventListener("click", e => { if(e.target === modalBg) closeModal(null); });
+  document.addEventListener("keydown", e => { if(e.key === "Escape" && modalBg.classList.contains("on")) closeModal(null); });
+
+  // text input -> Promise<string|null> (null = cancelled)
+  function promptModal(title, value){
+    return new Promise(res => {
+      modalResolve = res;
+      modalBox.innerHTML = `
+        <h4>${esc(title)}</h4>
+        <div class="mnew" style="border-top:none"><input class="mtext" id="mInput" value="${esc(value||'')}" /></div>
+        <div class="modal-foot">
+          <button class="btn ghost" id="mCancel">Cancel</button>
+          <button class="btn" id="mOk">Save</button>
+        </div>`;
+      modalBg.classList.add("on");
+      const inp = $("mInput"); inp.focus(); inp.select();
+      const ok = () => closeModal(inp.value.trim());
+      $("mOk").onclick = ok;
+      $("mCancel").onclick = () => closeModal(null);
+      inp.addEventListener("keydown", e => { if(e.key === "Enter") ok(); });
+    });
+  }
+
+  // choose a destination topic -> Promise<{key,title,isNew}|null>
+  function pickTopic(title, excludeId){
+    return new Promise(res => {
+      modalResolve = res;
+      const rows = TOPICS.filter(t => t.id !== excludeId).map(t => `
+        <div class="modal-row" data-id="${esc(t.id)}" data-title="${esc(t.title)}">
+          <span class="tm-dot ${t.source}" style="align-self:center"></span>${esc(t.title)}
+          <span class="mr-sub">${t.sessionCount} session${t.sessionCount>1?'s':''} · ${ago(t.lastActivity)} ago</span>
+        </div>`).join("");
+      modalBox.innerHTML = `
+        <h4>${esc(title)}</h4>
+        <div class="mbody">${rows || '<div style="padding:14px 26px;color:var(--ink-faint);font-family:var(--mono);font-size:12px">No other topics yet — type a new one below.</div>'}
+          <div id="mNone" style="display:none;padding:14px 26px;color:var(--ink-faint);font-family:var(--mono);font-size:12px">No topic matches — hit Create to make it new.</div>
+        </div>
+        <div class="mnew">
+          <input class="mtext" id="mNew" placeholder="type to filter… or name a new topic" />
+          <button class="btn" id="mCreate">Create</button>
+        </div>
+        <div class="modal-foot"><button class="btn ghost" id="mCancel2">Cancel</button></div>`;
+      modalBg.classList.add("on");
+      modalBox.querySelectorAll(".modal-row").forEach(el =>
+        el.addEventListener("click", () => closeModal({key: el.dataset.id, title: el.dataset.title, isNew: false})));
+      const inp = $("mNew");
+      // live filter: show only topics whose title contains what you typed
+      const filterRows = () => {
+        const q = inp.value.trim().toLowerCase();
+        let shown = 0;
+        modalBox.querySelectorAll(".modal-row").forEach(el => {
+          const hit = !q || (el.dataset.title || "").toLowerCase().includes(q);
+          el.style.display = hit ? "" : "none";
+          if(hit) shown++;
+        });
+        const none = $("mNone");
+        if(none) none.style.display = (q && !shown) ? "" : "none";
+      };
+      const create = () => {
+        const v = inp.value.trim();
+        if(!v) return;
+        closeModal({key: "custom:" + Date.now().toString(36), title: v, isNew: true});
+      };
+      $("mCreate").onclick = create;
+      inp.addEventListener("input", filterRows);
+      inp.addEventListener("keydown", e => { if(e.key === "Enter") create(); });
+      inp.focus();
+      $("mCancel2").onclick = () => closeModal(null);
+    });
+  }
+
+  // ---------- topic edits (all persisted server-side, then re-render) ----------
+  async function renameTopic(tid){
+    const t = TOPICS.find(x => x.id === tid); if(!t) return;
+    const title = await promptModal("Rename topic", t.title);
+    if(title === null) return;        // cancelled (empty string = revert to auto name)
+    try {
+      await fetch("/api/topic/rename", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, title})});
+      await pollContext();
+    } catch(e){}
+  }
+  async function deleteTopic(tid){
+    const t = TOPICS.find(x => x.id === tid); if(!t) return;
+    const dest = await pickTopic(`Delete “${t.title}” — send its ${t.sessionCount} session${t.sessionCount>1?'s':''} to:`, tid);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, target: dest.key, targetTitle: dest.isNew ? dest.title : ""})});
+      SELECTED = dest.key;            // jump to where the sessions landed
+      await pollContext();
+    } catch(e){}
+  }
+  async function moveSession(sid){
+    const dest = await pickTopic("Move this session to:", SELECTED);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/move", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({session: sid, key: dest.key, title: dest.isNew ? dest.title : ""})});
+      await pollContext();
+    } catch(e){}
+  }
+  // archiving a topic puts the whole topic — and every session in it — into archive mode.
+  // it auto-revives the moment you work on any of its sessions again.
+  async function archiveTopic(tid, undo){
+    try {
+      await fetch("/api/archive", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({subject: tid, undo: !!undo})});
+      await pollContext();
+    } catch(e){}
+  }
+  // merge a topic into another (its sessions combine under the one you pick)
+  async function mergeTopic(tid){
+    const t = TOPICS.find(x => x.id === tid); if(!t) return;
+    const dest = await pickTopic(`Merge “${t.title}” into:`, tid);
+    if(!dest) return;
+    try {
+      await fetch("/api/topic/merge", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({key: tid, target: dest.key, targetTitle: dest.isNew ? dest.title : ""})});
+      SELECTED = dest.key;
+      await pollContext();
+    } catch(e){}
+  }
+
+  // ---------- multi-select batch actions over sessions ----------
+  function renderBatchBar(){
+    const bar = $("batchBar"); if(!bar) return;
+    const n = SELECTED_SIDS.size;
+    bar.style.display = n ? "flex" : "none";
+    const c = $("bbCount"); if(c) c.textContent = n + " selected";
+  }
+  async function batchAction(kind){
+    if(kind === "clear"){ SELECTED_SIDS.clear(); renderTopicDetail(); return; }
+    const sids = [...SELECTED_SIDS];
+    if(!sids.length) return;
+    try {
+      if(kind === "move"){
+        const dest = await pickTopic(`Move ${sids.length} session${sids.length>1?'s':''} to:`, null);
+        if(!dest) return;
+        await fetch("/api/sessions/move", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids, key: dest.key, title: dest.isNew ? dest.title : ""})});
+      } else if(kind === "archive"){
+        await fetch("/api/sessions/archive", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids})});
+      } else if(kind === "delete"){
+        if(!confirm(`Delete ${sids.length} session${sids.length>1?'s':''}? They move to Trash — recoverable, and the logs are never touched.`)) return;
+        await fetch("/api/sessions/delete", {method:"POST", headers:{"Content-Type":"application/json"},
+          body: JSON.stringify({sessions: sids})});
+      }
+      SELECTED_SIDS.clear();
+      await pollContext();
+      loadTrash();
+    } catch(e){}
+  }
+  async function unarchiveSession(sid){
+    try {
+      await fetch("/api/sessions/unarchive", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({sessions: [sid]})});
+      await pollContext();
+    } catch(e){}
+  }
+
+  // ---------- Trash (soft-deleted sessions, recoverable) ----------
+  async function loadTrash(){
+    let d;
+    try { d = await (await fetch("/api/trash", {cache:"no-store"})).json(); } catch(e){ return; }
+    const el = $("trash");
+    const list = d.deleted || [];
+    if(!list.length){ el.innerHTML = ""; return; }
+    const open = el.querySelector(".trash-list.open") ? "open" : "";
+    el.innerHTML = `<div class="trash-wrap">
+        <div class="trash-h" id="trashToggle">🗑 trash · ${list.length} deleted session${list.length>1?'s':''}</div>
+        <div class="trash-list ${open}">${list.map(s => `
+          <div class="trash-row">
+            <div class="tr-txt"><b>${esc(s.id.slice(0,8))}</b> ${esc(s.project||'')} — ${esc((s.prompt||'').slice(0,90))}…</div>
+            <button class="restore-btn" data-restore="${esc(s.id)}">⤺ restore</button>
+          </div>`).join("")}</div>
+      </div>`;
+    el.querySelector("#trashToggle").addEventListener("click", () =>
+      el.querySelector(".trash-list").classList.toggle("open"));
+    el.querySelectorAll("[data-restore]").forEach(b => b.addEventListener("click", async () => {
+      try { await fetch("/api/sessions/undelete", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({sessions: [b.dataset.restore]})}); } catch(e){}
+      await pollContext(); loadTrash();
+    }));
+  }
+
   function renderTopicMenu(){
     const m = $("topicMenu");
     if(!TOPICS.length){ m.innerHTML = "<div class='tm-item'><h5 style='font-weight:400;color:var(--ink-faint)'>No sessions found</h5></div>"; return; }
-    m.innerHTML = TOPICS.map(t => `
-      <div class="tm-item ${t.id===SELECTED?'active':''}" data-id="${esc(t.id)}">
-        <h5><span class="tm-dot ${t.source}"></span>${esc(t.title)}${t.unreadCount?`<span class="tm-unread">${t.unreadCount}</span>`:''}</h5>
+    // archived topics sink to the bottom (recency preserved within each group)
+    const ordered = TOPICS.slice().sort((a,b) => (a.archived?1:0) - (b.archived?1:0));
+    m.innerHTML = ordered.map(t => `
+      <div class="tm-item ${t.id===SELECTED?'active':''} ${t.archived?'archived':''}" data-id="${esc(t.id)}">
+        <h5><span class="tm-dot ${t.source}"></span>${esc(t.title)}${t.archived?'<span class="tm-arch">archived</span>':''}${t.unreadCount?`<span class="tm-unread">${t.unreadCount}</span>`:''}</h5>
         <div class="tm-sub">${t.sessionCount} session${t.sessionCount>1?'s':''} · ${ago(t.lastActivity)} ago</div>
       </div>`).join("");
     m.querySelectorAll(".tm-item").forEach(el =>
-      el.addEventListener("click", () => { SELECTED = el.dataset.id; renderTopicMenu(); renderTopicDetail(); }));
+      el.addEventListener("click", () => { SELECTED = el.dataset.id; SELECTED_SIDS.clear(); renderTopicMenu(); renderTopicDetail(); }));
   }
 
-  function ctxChip(pct, tokens){
-    if(pct==null) return "";
-    const left = Math.max(0, 100 - pct);            // matches the terminal's "context left"
-    const low = left < 20;                          // running out of room
+  function ctxChip(pct, tokens, window){
+    if(pct==null) return "";              // pct = % USED of this session's effective window
+    const left = Math.max(0, 100 - pct);
+    const low = left < 20;                // <20% left = almost full
     const cls = low ? "hot" : pct>=50 ? "warn" : "";
     const tk = tokens ? Math.round(tokens/1000)+"k" : "—";
-    const tip = `${tk} of 1M tokens used · ${pct}% used · ${left}% left`;
-    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${cls}">${tk}</b> · <b class="${low?'danger':cls}">${left}%</b> left</span>`;
+    const win = window ? Math.round(window/1000)+"k" : "?";
+    const tip = `${tk} of ~${win} usable context (model window minus output reserve, inferred) · ${pct}% used · ${left}% left`;
+    return `<span class="ctxbar" title="${tip}">ctx <span class="track"><i class="${cls}" style="width:${Math.min(pct,100)}%"></i></span> <b class="${low?'danger':cls}">${tk}/${win} · ${pct}%</b></span>`;
   }
 
   function renderTopicDetail(){
@@ -1263,21 +1571,37 @@
     if(!t){ d.innerHTML = "<div style='color:var(--ink-faint);font-family:var(--mono);font-size:12px'>Pick a topic from the menu.</div>"; return; }
     d.innerHTML = `
       <div class="td-head">
-        <h3>${esc(t.title)}${t.unreadCount?`<span class="tm-unread">${t.unreadCount}</span>`:''}</h3>
+        <h3>${esc(t.title)}${t.archived?'<span class="td-arch">archived</span>':''}${t.unreadCount?`<span class="tm-unread">${t.unreadCount}</span>`:''}</h3>
         <div class="td-meta"><span class="topic-src ${t.source}">${esc(t.source)}</span> ${SRC_NOTE[t.source]||''} · <b>${t.sessionCount}</b> session${t.sessionCount>1?'s':''} · last ${ago(t.lastActivity)} ago${t.unreadCount?`<button class="mrk-all" data-tid="${esc(t.id)}">✓ mark all read</button>`:''}</div>
+        <div class="td-tools">
+          <button class="tbtn" data-rename="${esc(t.id)}">✎ rename</button>
+          <button class="tbtn" data-merge="${esc(t.id)}" title="Merge this topic into another — its sessions combine under the one you pick.">⤳ merge</button>
+          <button class="tbtn ${t.archived?'on':''}" data-archive="${esc(t.id)}" data-undo="${t.archived?'1':''}" title="Archive the whole topic — every session in it goes into archive mode. It returns automatically if you work on it again.">${t.archived?'⤺ unarchive':'⊟ archive'}</button>
+          <button class="tbtn danger" data-delete="${esc(t.id)}">⌦ delete</button>
+        </div>
+      </div>
+      <div class="batchbar" id="batchBar" style="display:none">
+        <span class="bb-count" id="bbCount"></span>
+        <button class="bb-btn" data-batch="move">⇄ move</button>
+        <button class="bb-btn" data-batch="archive">⊟ archive</button>
+        <button class="bb-btn danger" data-batch="delete">🗑 delete</button>
+        <button class="bb-btn ghost" data-batch="clear">clear selection</button>
       </div>
       ${t.sessions.map(s => `
-        <div class="tsession ${s.closed?'closed':(s.state==='read'?'read':'unread')}">
+        <div class="tsession ${s.archived?'archived':''} ${s.closed?'closed':(s.state==='read'?'read':'unread')}">
+          <input type="checkbox" class="selbox" data-sid="${esc(s.id)}" ${SELECTED_SIDS.has(s.id)?'checked':''} title="select for a batch action" />
           <div class="tmeta">
-            <div class="tprompt">${s.closed?'<span class="closed-tag">✕ closed</span>':badge(s.state)}${esc((s.prompt||'').slice(0,200))}…</div>
-            <div class="tsub"><b>${esc(s.id.slice(0,8))}</b> · ${esc(s.project)}${s.label!==s.project&&s.label!=='root'?' / '+esc(s.label):''} · ${s.msgs} exchanges · ${ago(s.end)} ago</div>
-            <div style="margin-top:7px">${ctxChip(s.ctxPct, s.ctxTokens)}</div>
+            <div class="tprompt">${s.archived?`<span class="arch-tag">⊟ archived</span>`:''}${s.closed?'<span class="closed-tag">✕ closed</span>':badge(s.state)}${esc((s.prompt||'').slice(0,200))}…</div>
+            <div class="tsub"><b title="${esc(s.id)}">${esc(s.id.slice(0,8))}</b><button class="copy-sid" data-copy-sid="${esc(s.id)}">copy id</button> · ${esc(s.project)}${s.label!==s.project&&s.label!=='root'?' / '+esc(s.label):''} · ${s.msgs} exchanges · ${ago(s.end)} ago</div>
+            <div style="margin-top:7px">${ctxChip(s.ctxPct, s.ctxTokens, s.ctxWindow)}</div>
             ${s.recap
               ? `<div class="trecap"><span class="rlabel">recap</span>${esc(s.recap)}</div>`
               : `<div class="trecap pending">generating recap…</div>`}
           </div>
           <div class="tacts">
             <button class="rsm" data-sid="${esc(s.id)}">▶ resume</button>
+            <button class="mv" data-move="${esc(s.id)}">⇄ move</button>
+            ${s.archivedSelf?`<button class="rop" data-unarch="${esc(s.id)}">⊟ unarchive</button>`:''}
             ${s.state!=='read'&&!s.closed?`<button class="mrk" data-sid="${esc(s.id)}" data-end="${esc(s.end)}">✓ read</button>`:''}
             ${s.closed
               ? `<button class="rop" data-sid="${esc(s.id)}">⤺ reopen</button>`
@@ -1290,6 +1614,43 @@
     d.querySelectorAll(".rop").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); reopenSession(b.dataset.sid); }));
     d.querySelectorAll(".mrk").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); markRead(b.dataset.sid, b.dataset.end, b); }));
     d.querySelectorAll(".mrk-all").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); markTopicRead(b.dataset.tid); }));
+    d.querySelectorAll("[data-rename]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); renameTopic(b.dataset.rename); }));
+    d.querySelectorAll("[data-merge]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); mergeTopic(b.dataset.merge); }));
+    d.querySelectorAll("[data-archive]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); archiveTopic(b.dataset.archive, !!b.dataset.undo); }));
+    d.querySelectorAll("[data-delete]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); deleteTopic(b.dataset.delete); }));
+    d.querySelectorAll(".mv").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); moveSession(b.dataset.move); }));
+    d.querySelectorAll("[data-unarch]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); unarchiveSession(b.dataset.unarch); }));
+    d.querySelectorAll(".selbox").forEach(b => b.addEventListener("change", e => {
+      e.stopPropagation();
+      if(b.checked) SELECTED_SIDS.add(b.dataset.sid); else SELECTED_SIDS.delete(b.dataset.sid);
+      renderBatchBar();
+    }));
+    d.querySelectorAll("[data-batch]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); batchAction(b.dataset.batch); }));
+    d.querySelectorAll(".copy-sid").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); copySid(b); }));
+    renderBatchBar();
+  }
+
+  function copySid(btn){
+    const sid = btn.dataset.copySid;
+    if(!sid) return;
+    const flash = ok => {
+      btn.classList.add("copied"); btn.textContent = ok ? "✓ copied" : "✗ failed";
+      setTimeout(() => { btn.classList.remove("copied"); btn.textContent = "copy id"; }, 1500);
+    };
+    if(navigator.clipboard){
+      navigator.clipboard.writeText(sid).then(() => flash(true), () => fallback(sid) ? flash(true) : flash(false));
+    } else {
+      flash(fallback(sid));
+    }
+  }
+  function fallback(text){
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text; ta.style.cssText = "position:fixed;top:0;left:0;opacity:0";
+      document.body.appendChild(ta); ta.focus(); ta.select();
+      const ok = document.execCommand("copy");
+      ta.remove(); return ok;
+    } catch(e){ return false; }
   }
 
   function renderContext(d){
@@ -1340,7 +1701,7 @@
         <span class="time">${clock(s.start)}</span><span class="type ${tc}">${s.project}${s.label!==s.project&&s.label!=='root'?' · '+esc(s.label):''}</span>
         <div class="what">${badge(s.state)}${esc((s.prompt||'').slice(0,150))}…</div>
         <div class="ctx">${s.msgs} exchanges · ${ago(s.end)} ago${s.summary?' · '+esc(s.summary.slice(0,50)):''}</div>
-        <div class="tl-foot"><span class="sid">${esc(s.id.slice(0,8))}</span>${ctxChip(s.ctxPct, s.ctxTokens)}<button class="rsm" data-sid="${esc(s.id)}">▶ resume</button></div>
+        <div class="tl-foot"><span class="sid" title="${esc(s.id)}">${esc(s.id.slice(0,8))}</span><button class="copy-sid" data-copy-sid="${esc(s.id)}">copy id</button>${ctxChip(s.ctxPct, s.ctxTokens, s.ctxWindow)}<button class="rsm" data-sid="${esc(s.id)}">▶ resume</button></div>
       </div>`;
     }).join("");
 
@@ -1358,6 +1719,8 @@
     // (topic-detail buttons are wired inside renderTopicDetail)
     [$("timeline"), $("threads")].forEach(c => c && c.querySelectorAll(".rsm").forEach(b =>
       b.addEventListener("click", e => { e.stopPropagation(); openSession(b.dataset.sid, b); })));
+    $("timeline") && $("timeline").querySelectorAll(".copy-sid").forEach(b =>
+      b.addEventListener("click", e => { e.stopPropagation(); copySid(b); }));
   }
 
   async function pollContext(){
@@ -1370,7 +1733,9 @@
     }
   }
   pollContext();
+  loadTrash();
   setInterval(pollContext, 120000);
+  setInterval(loadTrash, 120000);
 
   // ---------- hero buttons ----------
   document.getElementById("rResumeTerm").addEventListener("click", e => {
