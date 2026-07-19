@@ -8,6 +8,7 @@ Local server for The Dev Dispatch.
 
 Run:  python3 usage-server.py   then open  http://localhost:8787/dev-dispatch.html
 """
+import concurrent.futures
 import datetime
 import glob
 import http.server
@@ -18,10 +19,33 @@ import shlex
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
+import uuid
 
 PORT = 8787
 DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+def _load_dotenv(path):
+    """Minimal .env loader (stdlib only — no python-dotenv dependency, matching this
+    project's no-dependencies convention). Sets os.environ for each KEY=value line found,
+    without overriding a var already set in the real environment, so
+    `FOO=bar python3 usage-server.py` still wins over whatever the .env file has."""
+    try:
+        with open(path) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+    except FileNotFoundError:
+        pass
+
+
+_load_dotenv(os.path.join(DIR, ".env"))  # picks up CLICKUP_API_TOKEN etc. if present
+
 # All persisted dashboard state lives in one folder beside this script (gitignored,
 # never published). Override with DISPATCH_STATE_DIR.
 STATE_DIR = os.environ.get("DISPATCH_STATE_DIR", os.path.join(DIR, "state"))
@@ -47,6 +71,10 @@ RECAP_PATH = os.path.join(STATE_DIR, "recaps.json")
 RECAP_MODEL = "claude-haiku-4-5"
 RECAP_INTERVAL = int(os.environ.get("RECAP_INTERVAL", "300"))  # worker loop, seconds
 RECAP_CONCURRENCY = int(os.environ.get("RECAP_CONCURRENCY", "3"))
+# Set to skip both background workers entirely — useful for running the server just to
+# serve the dashboard + answer on-demand refresh clicks, without the 5/10-min auto-polling
+# `claude -p` calls running (and burning tokens) the whole time it's up.
+DISABLE_WORKERS = os.environ.get("DISABLE_WORKERS", "").lower() in ("1", "true", "yes")
 
 # ---------- the "Where am I right now" refocus board ----------
 # A subject = one topic (the existing grouping). Each SESSION in it is an "issue" with
@@ -68,6 +96,27 @@ FOCUS_POOL = int(os.environ.get("FOCUS_POOL", "5"))         # subjects to keep c
 FOCUS_ISSUES = int(os.environ.get("FOCUS_ISSUES", "6"))     # issues (sessions) per subject
 STALE_DAYS = int(os.environ.get("STALE_DAYS", "7"))         # drop sessions untouched this long
 DONE_KEEP_DAYS = int(os.environ.get("DONE_KEEP_DAYS", "7"))  # done sessions vanish this long after
+
+# ---------- Feature tracker: one card per in-flight ClickUp task ----------
+# clickup-tasks.json is a raw snapshot of your assigned Backend Backlog tasks, refreshed by
+# a background worker that calls the ClickUp REST API directly (see _clickup_api below) —
+# no `claude -p` / MCP round-trip needed, since this is plain data-fetching + regex matching,
+# not a task an LLM adds value to. feature-tracker.json holds the manually-entered repo/PR
+# links per task plus the deployed/e2e-tested toggles — nothing here is auto-derived.
+CLICKUP_PATH = os.path.join(STATE_DIR, "clickup-tasks.json")
+TRACKER_PATH = os.path.join(STATE_DIR, "feature-tracker.json")
+CLICKUP_LIST_ID = "901818457061"  # Backend Backlog, per the morning-clickup-review skill
+CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
+CLICKUP_API_TOKEN = os.environ.get("CLICKUP_API_TOKEN", "")
+CLICKUP_INTERVAL = int(os.environ.get("CLICKUP_INTERVAL", "600"))  # worker loop, seconds
+TRACKED_STATUSES = {"in progress", "in review", "in testing", "waiting for deployment", "complete"}
+_STATUS_HINTS = ("progress", "review", "test", "deploy", "complete")  # near-miss detection only
+_GH_CACHE = {}       # prUrl -> {"data": {...}, "at": epoch}
+GH_CACHE_TTL = 120    # seconds
+GH_TIMEOUT = 12       # subprocess timeout, so a hung `gh` can't hang a request thread
+GITHUB_ORG = "tenjin-data-enhancement"
+_ORG_REPOS_CACHE = {"at": 0, "repos": []}
+ORG_REPOS_TTL = 3600  # org repo list rarely changes
 
 # Per-session context gauge. Sessions run different model windows (200k standard, or the
 # 1M beta), so we infer the window from the session's own peak usage, then subtract the
@@ -680,8 +729,7 @@ def _recap_refresh():
         return sid, recap, fp
 
     done = 0
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=RECAP_CONCURRENCY) as ex:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=RECAP_CONCURRENCY) as ex:
         for sid, recap, fp in ex.map(work, todo):
             if recap:
                 cache[sid] = {"recap": recap, "fp": fp,
@@ -689,6 +737,24 @@ def _recap_refresh():
                 _recap_save(cache)  # incremental, so the menu fills in progressively
                 done += 1
     return done
+
+
+# Prevents overlapping recap refreshes — e.g. a manual "regenerate recaps" click landing
+# while the periodic worker's own cycle is still mid-flight. Each `claude -p` call costs a
+# real Claude session, so two overlapping cycles would double-spend on the same sessions.
+_RECAP_REFRESH_LOCK = threading.Lock()
+
+
+def _recap_refresh_guarded():
+    """Run _recap_refresh() unless one is already in progress, in which case skip and
+    return None rather than stacking a second concurrent run."""
+    if not _RECAP_REFRESH_LOCK.acquire(blocking=False):
+        print("[recaps] refresh already in progress — skipping this trigger")
+        return None
+    try:
+        return _recap_refresh()
+    finally:
+        _RECAP_REFRESH_LOCK.release()
 
 
 # ----------------------------- issue cards (per session) -----------------------------
@@ -980,11 +1046,421 @@ def _build_focus():
     }
 
 
+# ----------------------------- feature tracker -----------------------------
+def _clickup_load():
+    try:
+        with open(CLICKUP_PATH) as fh:
+            return json.load(fh)
+    except Exception:
+        return {"fetchedAt": None, "error": None, "tasks": {}, "unmatchedStatuses": []}
+
+
+def _clickup_save(d):
+    tmp = CLICKUP_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, CLICKUP_PATH)
+
+
+# Guards every feature-tracker.json load-modify-save sequence (HTTP handlers + the
+# background worker's PR auto-merge) so two concurrent writers can't clobber each other —
+# e.g. a manual refresh and the periodic worker both landing at once.
+_TRACKER_LOCK = threading.Lock()
+
+# Prevents overlapping ClickUp refresh cycles — e.g. a manual "refresh" click landing while
+# the periodic worker's own cycle (or an earlier click) is still mid-flight. Each cycle
+# writes clickup-tasks.json and reconciles feature-tracker.json; running two at once wastes
+# ClickUp API calls for no benefit.
+_CLICKUP_REFRESH_LOCK = threading.Lock()
+
+
+def _clickup_refresh_guarded():
+    """Run _clickup_refresh() unless one is already in progress, in which case skip and
+    return None rather than stacking a second concurrent fetch."""
+    if not _CLICKUP_REFRESH_LOCK.acquire(blocking=False):
+        print("[clickup] refresh already in progress — skipping this trigger")
+        return None
+    try:
+        return _clickup_refresh()
+    finally:
+        _CLICKUP_REFRESH_LOCK.release()
+
+
+def _tracker_load():
+    try:
+        with open(TRACKER_PATH) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _tracker_save(d):
+    tmp = TRACKER_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, TRACKER_PATH)
+
+
+def _tracker_entry(d, task_id):
+    """Get-or-create the tracker entry for a task, mutating d in place."""
+    return d.setdefault(task_id, {"repos": [], "deployed": False, "e2eTested": False, "updatedAt": None})
+
+
+def _clickup_api(path, params=None, timeout=20):
+    """GET a ClickUp API v2 endpoint directly with the personal token (CLICKUP_API_TOKEN),
+    no MCP/`claude -p` round-trip. Raises on any failure (network, timeout, non-2xx, bad
+    JSON) — callers catch and treat that the same way a failed claude -p call used to be
+    treated (retry once, then give up for this cycle)."""
+    url = CLICKUP_API_BASE + path
+    if params:
+        url += "?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={"Authorization": CLICKUP_API_TOKEN})
+    # nosec B310 — URL is always CLICKUP_API_BASE + a hardcoded path, never user input
+    with urllib.request.urlopen(req, timeout=timeout) as r:  # nosec B310
+        return json.loads(r.read())
+
+
+def _gen_task_list():
+    """Fetch this user's Backend Backlog tasks, including closed/complete ones
+    (id/name/url/status/listName/dateUpdated only — no description/comments) directly from
+    the ClickUp REST API."""
+    for attempt in (1, 2):
+        try:
+            user_id = _clickup_api("/user")["user"]["id"]
+            data = _clickup_api(f"/list/{CLICKUP_LIST_ID}/task", params=[
+                ("assignees[]", user_id),
+                ("include_closed", "true"),  # "complete" is a closed status type in ClickUp
+                ("subtasks", "true"),
+                ("order_by", "updated"),
+                ("reverse", "true"),
+            ])
+            return [
+                {
+                    "id": t.get("id"),
+                    "name": t.get("name"),
+                    "url": t.get("url"),
+                    "status": (t.get("status") or {}).get("status", ""),
+                    "listName": (t.get("list") or {}).get("name", ""),
+                    "dateUpdated": t.get("date_updated"),
+                }
+                for t in data.get("tasks", [])
+            ]
+        except Exception as e:
+            suffix = "retrying" if attempt == 1 else "giving up"
+            print(f"[clickup] task-list attempt {attempt} failed: {e} — {suffix}")
+    return None
+
+
+def _gen_task_text(task_id):
+    """Fetch ONE task's full description + top-level comments directly from the ClickUp REST
+    API. Naturally isolated per task — the API only offers per-task endpoints anyway, so
+    there's no combined-call temptation, and (unlike the old claude -p implementation) no LLM
+    in the loop means no risk of it cross-attributing a PR mention from one task onto
+    another's entry."""
+    for attempt in (1, 2):
+        try:
+            task = _clickup_api(f"/task/{task_id}")
+            comments = _clickup_api(f"/task/{task_id}/comment")
+            description = task.get("text_content") or task.get("description") or ""
+            comment_text = "\n".join(
+                c.get("comment_text", "") for c in comments.get("comments", [])
+            )
+            return {"description": description, "comments": comment_text}
+        except Exception as e:
+            suffix = "retrying" if attempt == 1 else "giving up"
+            print(f"[clickup] task-text:{task_id} attempt {attempt} failed: {e} — {suffix}")
+    return {"description": "", "comments": ""}
+
+
+def _classify_status(raw):
+    """(is_tracked, is_near_miss) for a raw ClickUp status string."""
+    norm = (raw or "").strip().lower()
+    if norm in TRACKED_STATUSES:
+        return True, False
+    return False, any(h in norm for h in _STATUS_HINTS)
+
+
+_PR_URL_RE = re.compile(r"https://github\.com/([\w.-]+)/([\w.-]+)/pull/(\d+)")
+
+# ClickUp's "Pull Requests" / "Related PRs" sections (and follow-up comments) reference PRs
+# as shorthand, in more than one house style — "web-getters — PR #48", "shared-classes PR
+# #62", and "tool-runners #152 — <description> (open)" (no "PR" word at all) — not full
+# github.com URLs. Both the em-dash separator and the "PR" word are optional to cover all
+# three; the repo-alias check in _extract_pr_urls is what keeps this from over-matching.
+_PR_SHORTHAND_RE = re.compile(r"([A-Za-z][\w.-]*)\s*(?:—|-)?\s*(?:PR\s*)?#\s*(\d+)")
+
+
+def _org_repos():
+    """Repo names in GITHUB_ORG via `gh repo list`, cached for ORG_REPOS_TTL seconds — the
+    org's repo list barely changes, so this is a cheap once-an-hour subprocess call."""
+    now = time.time()
+    if _ORG_REPOS_CACHE["repos"] and now - _ORG_REPOS_CACHE["at"] < ORG_REPOS_TTL:
+        return _ORG_REPOS_CACHE["repos"]
+    try:
+        res = subprocess.run(
+            ["gh", "repo", "list", GITHUB_ORG, "--limit", "200", "--json", "name", "-q", ".[].name"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+        )
+        if res.returncode == 0:
+            repos = [r for r in res.stdout.splitlines() if r.strip()]
+            if repos:
+                _ORG_REPOS_CACHE.update(at=now, repos=repos)
+    except Exception as e:
+        print(f"[github] org repo list fetch failed: {e}")
+    return _ORG_REPOS_CACHE["repos"]
+
+
+def _match_repo_alias(token, repos):
+    """Resolve a shorthand repo mention (e.g. "web-getters") to its real repo slug (e.g.
+    "web-getters-azure") by exact match, then by prefix match against the org's repo list —
+    ClickUp text often drops a repo's suffix. Returns None if nothing matches, so a stray
+    word before "PR #N" (e.g. "the PR #62") is never mistaken for a repo."""
+    t = token.lower()
+    for r in repos:
+        if r.lower() == t:
+            return r
+    for r in repos:
+        if r.lower().startswith(t + "-"):
+            return r
+    return None
+
+
+def _extract_pr_urls(text):
+    """Distinct (url, "owner/repo") pairs for GitHub PR links found in free text — both full
+    https://github.com/... URLs and ClickUp's shorthand "repo — PR #N" mentions, resolved
+    against the live GitHub org repo list."""
+    seen, out = set(), []
+    for m in _PR_URL_RE.finditer(text or ""):
+        url = m.group(0)
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append((url, f"{m.group(1)}/{m.group(2)}"))
+
+    repos = _org_repos()
+    if repos:
+        for m in _PR_SHORTHAND_RE.finditer(text or ""):
+            repo = _match_repo_alias(m.group(1), repos)
+            if not repo:
+                continue
+            url = f"https://github.com/{GITHUB_ORG}/{repo}/pull/{m.group(2)}"
+            if url in seen:
+                continue
+            seen.add(url)
+            out.append((url, f"{GITHUB_ORG}/{repo}"))
+    return out
+
+
+MISS_THRESHOLD = 2  # consecutive not-found fetches required before an auto entry is dropped
+
+# Manual per-PR work-status pills — set by the user from the dashboard, independent of the
+# live GitHub merge status. Tracks where a PR sits in the review cycle, not just open/merged.
+PR_STATUS_OPTIONS = ["working on it", "waiting for review", "waiting for re-review", "blocked", "ready to merge"]
+
+
+def _merge_detected_prs(tracker, task_id, text):
+    """Reconcile a task's auto-detected repos against its current ClickUp text (description +
+    comments): drop any `source: "auto"` entry whose PR link hasn't appeared in the text for
+    MISS_THRESHOLD consecutive fetches (e.g. the task description was edited/cleaned up), then
+    add any new PR links found that aren't already tracked. Manually-added entries (any other
+    source) are never touched either way — reconciliation only applies to what we derived from
+    ClickUp ourselves.
+
+    Full reconciliation was tried once and reverted after it wrongly deleted real entries — the
+    cause then was concurrent fetches corrupting per-task text (fixed via _CLICKUP_REFRESH_LOCK).
+    A later incident showed a SINGLE isolated per-task fetch can still occasionally return
+    valid, parseable JSON with genuinely incomplete content (the call succeeds, the text is
+    non-empty, but a real section like "Pull Requests" is missing) — a failure mode no amount
+    of empty-text guarding catches, since the fetch didn't fail, it just returned wrong content.
+    Requiring MISS_THRESHOLD consecutive misses before dropping means a single bad-content fetch
+    can no longer destroy real data — it takes two independent fetches agreeing something is
+    gone, which is far less likely to both be wrong the same way.
+
+    Returns True if the tracker dict was changed."""
+    found = _extract_pr_urls(text)
+    found_urls = {url for url, _ in found}
+    entry = _tracker_entry(tracker, task_id)
+    changed = False
+
+    if (text or "").strip():
+        kept = []
+        for r in entry["repos"]:
+            if r.get("source") != "auto":
+                kept.append(r)
+                continue
+            if r.get("prUrl") in found_urls:
+                if r.get("notFoundStreak"):
+                    r["notFoundStreak"] = 0
+                    changed = True
+                kept.append(r)
+                continue
+            streak = r.get("notFoundStreak", 0) + 1
+            if streak >= MISS_THRESHOLD:
+                changed = True  # confirmed stale across MISS_THRESHOLD consecutive fetches
+                continue
+            r["notFoundStreak"] = streak
+            changed = True
+            kept.append(r)
+        entry["repos"] = kept
+
+    existing = {r.get("prUrl") for r in entry["repos"] if r.get("prUrl")}
+    for url, repo in found:
+        if url in existing:
+            continue
+        entry["repos"].append({
+            "id": uuid.uuid4().hex[:8], "repo": repo, "branch": "",
+            "prUrl": url, "source": "auto", "notFoundStreak": 0, "status": "",
+        })
+        existing.add(url)
+        changed = True
+
+    if changed:
+        entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    return changed
+
+
+def _clickup_refresh():
+    """Pull the latest snapshot and persist it, flagging any status string that doesn't
+    match TRACKED_STATUSES exactly but looks close (so drift is visible, not silently dropped).
+    Also reconciles each tracked task's auto-detected repos in feature-tracker.json against its
+    current description + comments/updates (see _merge_detected_prs) — PRs often get pasted into
+    a comment as work progresses, not just the original description, and edits/cleanup to the
+    ClickUp text should be reflected here too rather than leaving stale entries behind.
+
+    Each tracked task's description+comments are fetched via its own ClickUp API call
+    (_gen_task_text) — the API only offers per-task endpoints, so this is naturally one task
+    at a time regardless; fetched concurrently since these are independent HTTP calls with no
+    shared state (unlike the old claude -p implementation, there's no LLM output that
+    overlapping calls could corrupt)."""
+    raw = _gen_task_list()
+    snap = _clickup_load()
+    if raw is None:
+        snap["error"] = "ClickUp API fetch failed"
+        _clickup_save(snap)
+        return 0
+    if isinstance(raw, list) and len(raw) == 0 and snap.get("tasks"):
+        # An empty list could mean "you really have zero open tasks" or a transient/partial
+        # response. Since we already have tasks from a previous successful fetch, treat a
+        # sudden empty result as suspicious rather than as "everything's done" and blindly
+        # wiping the dashboard.
+        snap["error"] = "fetch returned an empty task list — treated as suspicious, kept prior data"
+        _clickup_save(snap)
+        return len(snap.get("tasks", {}))
+
+    tasks, unmatched, tracked_ids = {}, [], []
+    for t in raw:
+        if not isinstance(t, dict):
+            continue  # defensive: malformed entry from the API response
+        tid = t.get("id")
+        if not tid:
+            continue
+        status = t.get("status", "")
+        tracked, near = _classify_status(status)
+        if tracked:
+            tasks[tid] = {k: t.get(k) for k in
+                          ("id", "name", "url", "status", "listName", "dateUpdated")}
+            tasks[tid]["id"] = tid
+            tracked_ids.append(tid)
+        elif near:
+            unmatched.append(status)
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+        texts = dict(zip(tracked_ids, pool.map(_gen_task_text, tracked_ids)))
+
+    with _TRACKER_LOCK:
+        tracker = _tracker_load()
+        tracker_changed = False
+        for tid, text_obj in texts.items():
+            text = (text_obj.get("description") or "") + "\n" + (text_obj.get("comments") or "")
+            if _merge_detected_prs(tracker, tid, text):
+                tracker_changed = True
+        if tracker_changed:
+            _tracker_save(tracker)
+
+    snap.update({
+        "fetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "error": None,
+        "tasks": tasks,
+        "unmatchedStatuses": sorted(set(unmatched)),
+    })
+    _clickup_save(snap)
+    if unmatched:
+        print(f"[clickup] near-miss statuses not tracked: {sorted(set(unmatched))}")
+    return len(tasks)
+
+
+def _clickup_worker():
+    """Background daemon: refresh the ClickUp task snapshot every CLICKUP_INTERVAL seconds."""
+    while True:
+        try:
+            n = _clickup_refresh_guarded()
+            if n is not None:
+                print(f"[clickup] refreshed, {n} tracked task(s)")
+        except Exception as e:
+            print(f"[clickup] worker error: {e}")
+        time.sleep(CLICKUP_INTERVAL)
+
+
+def _gh_pr_status(pr_url):
+    """Live merge status for one PR via `gh pr view`. Cached briefly; never raises."""
+    if not pr_url:
+        return {"state": "none", "merged": False}
+    now = time.time()
+    hit = _GH_CACHE.get(pr_url)
+    if hit and now - hit["at"] < GH_CACHE_TTL:
+        return hit["data"]
+    try:
+        res = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+        )
+        if res.returncode != 0:
+            data = {"state": "unknown", "merged": False, "error": (res.stderr or "").strip()[:200]}
+        else:
+            j = json.loads(res.stdout)
+            data = {"state": j.get("state", "unknown"), "merged": bool(j.get("mergedAt"))}
+    except Exception as e:
+        data = {"state": "unknown", "merged": False, "error": str(e)}
+    _GH_CACHE[pr_url] = {"data": data, "at": now}
+    return data
+
+
+def _clickup_ts_to_iso(ms):
+    """Convert a ClickUp epoch-millisecond timestamp string to ISO 8601 (UTC), or None —
+    lets the frontend reuse the same ago() helper it already uses for fetchedAt."""
+    if not ms:
+        return None
+    try:
+        return datetime.datetime.fromtimestamp(int(ms) / 1000, tz=datetime.timezone.utc).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _build_tracker():
+    """Combined tracker view: ClickUp snapshot + manual repo entries + live merge status."""
+    snap = _clickup_load()
+    tracker = _tracker_load()
+    cards = []
+    for tid, t in snap.get("tasks", {}).items():
+        entry = tracker.get(tid) or {"repos": [], "deployed": False, "e2eTested": False}
+        repos = [{**r, "mergeStatus": _gh_pr_status(r.get("prUrl"))} for r in entry["repos"]]
+        cards.append({
+            "taskId": tid, "name": t.get("name", ""), "url": t.get("url", ""),
+            "status": t.get("status", ""), "repos": repos,
+            "dateUpdated": _clickup_ts_to_iso(t.get("dateUpdated")),
+            "deployed": bool(entry.get("deployed")), "e2eTested": bool(entry.get("e2eTested")),
+        })
+    cards.sort(key=lambda c: c["dateUpdated"] or "", reverse=True)
+    return {"cards": cards, "fetchedAt": snap.get("fetchedAt"),
+            "error": snap.get("error"), "unmatchedStatuses": snap.get("unmatchedStatuses", []),
+            "prStatusOptions": PR_STATUS_OPTIONS}
+
+
 def _recap_worker():
     """Background daemon: backfill recaps + issue cards, refresh changed ones each loop."""
     while True:
         try:
-            n = _recap_refresh()
+            n = _recap_refresh_guarded()
             if n:
                 print(f"[recaps] generated/updated {n} session recap(s)")
         except Exception as e:
@@ -1301,6 +1777,76 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         is_open = self.path.startswith("/api/open")
         is_close = self.path.startswith("/api/close")
+        if self.path.startswith("/api/tracker/repo"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                task_id = body.get("taskId", "")
+                if not task_id:
+                    return self._json({"error": "missing taskId"}, 400)
+                with _TRACKER_LOCK:
+                    d = _tracker_load()
+                    entry = _tracker_entry(d, task_id)
+                    action = body.get("action", "add")
+                    if action == "add":
+                        entry["repos"].append({
+                            "id": uuid.uuid4().hex[:8],
+                            "repo": body.get("repo", "").strip(),
+                            "branch": body.get("branch", "").strip(),
+                            "prUrl": body.get("prUrl", "").strip(),
+                            "status": "",
+                        })
+                    elif action == "edit":
+                        for r in entry["repos"]:
+                            if r["id"] == body.get("id"):
+                                r["repo"] = body.get("repo", r["repo"])
+                                r["branch"] = body.get("branch", r["branch"])
+                                r["prUrl"] = body.get("prUrl", r["prUrl"])
+                    elif action == "status":
+                        status = body.get("status", "")
+                        if status and status not in PR_STATUS_OPTIONS:
+                            return self._json({"error": f"unknown status {status}"}, 400)
+                        for r in entry["repos"]:
+                            if r["id"] == body.get("id"):
+                                r["status"] = status
+                    elif action == "remove":
+                        entry["repos"] = [r for r in entry["repos"] if r["id"] != body.get("id")]
+                    else:
+                        return self._json({"error": f"unknown action {action}"}, 400)
+                    entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    _tracker_save(d)
+                return self._json({"ok": True, "repos": entry["repos"]})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+        if self.path.startswith("/api/tracker/toggle"):
+            try:
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length) or b"{}")
+                task_id, field = body.get("taskId", ""), body.get("field", "")
+                if field not in ("deployed", "e2eTested"):
+                    return self._json({"error": "invalid field"}, 400)
+                with _TRACKER_LOCK:
+                    d = _tracker_load()
+                    entry = _tracker_entry(d, task_id)
+                    entry[field] = bool(body["value"]) if "value" in body else not entry[field]
+                    entry["updatedAt"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+                    _tracker_save(d)
+                return self._json({"ok": True, field: entry[field]})
+            except Exception as e:
+                return self._json({"error": str(e)}, 500)
+        if self.path.startswith("/api/tracker/refresh"):
+            # force a re-pull of the ClickUp snapshot + drop cached PR merge status, off-thread
+            if _CLICKUP_REFRESH_LOCK.locked():
+                return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
+            _GH_CACHE.clear()
+            threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
+            return self._json({"ok": True, "refreshing": True})
+        if self.path.startswith("/api/recap/refresh"):
+            # force a regeneration of recaps for changed sessions, off-thread
+            if _RECAP_REFRESH_LOCK.locked():
+                return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
+            threading.Thread(target=_recap_refresh_guarded, daemon=True).start()
+            return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/refresh"):
             # force a re-scan + regenerate the focus board's issue cards, off-thread
             _ctx_cache["at"] = 0
@@ -1411,6 +1957,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 self._json({"error": str(e)}, 502)
             return
+        if self.path.startswith("/api/tracker"):
+            try:
+                self._json(_build_tracker())
+            except Exception as e:
+                self._json({"error": str(e)}, 502)
+            return
         if self.path.startswith("/api/context"):
             try:
                 self._json(_apply_read_state(_build_context()))
@@ -1444,13 +1996,24 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    # background recap worker — generates/refreshes session recaps via `claude -p`
-    threading.Thread(target=_recap_worker, daemon=True).start()
+    if not CLICKUP_API_TOKEN:
+        print("[clickup] WARNING: CLICKUP_API_TOKEN is not set — feature-tracker refreshes "
+              "will fail. Get a personal token from ClickUp (avatar -> Settings -> Apps -> "
+              "API Token) and set it as an env var before running this script.")
+    if not DISABLE_WORKERS:
+        # background recap worker — generates/refreshes session recaps via `claude -p`
+        threading.Thread(target=_recap_worker, daemon=True).start()
+        # background feature-tracker worker — refreshes the ClickUp task snapshot
+        threading.Thread(target=_clickup_worker, daemon=True).start()
     # Threaded server: one slow/blocked request (e.g. a hung osascript or usage fetch)
     # must never freeze the whole dashboard. daemon_threads so it shuts down cleanly.
     http.server.ThreadingHTTPServer.allow_reuse_address = True
     http.server.ThreadingHTTPServer.daemon_threads = True
     with http.server.ThreadingHTTPServer(("127.0.0.1", PORT), Handler) as httpd:
         print(f"Dev Dispatch → http://localhost:{PORT}/dev-dispatch.html")
-        print(f"[recaps] worker on, every {RECAP_INTERVAL}s via {RECAP_MODEL}")
+        if DISABLE_WORKERS:
+            print("[workers] disabled (DISABLE_WORKERS) — use the refresh buttons for on-demand updates")
+        else:
+            print(f"[recaps] worker on, every {RECAP_INTERVAL}s via {RECAP_MODEL}")
+            print(f"[clickup] worker on, every {CLICKUP_INTERVAL}s via the ClickUp REST API")
         httpd.serve_forever()

@@ -3,6 +3,9 @@ state/
 usage-data.js
 *.log
 
+# Secrets — never commit
+.env
+
 # OS / editor cruft
 .DS_Store
 *.swp

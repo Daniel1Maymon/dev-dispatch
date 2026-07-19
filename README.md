@@ -24,6 +24,27 @@ different folder with an env var:
 DISPATCH_ROOT=~/code python3 usage-server.py
 ```
 
+The feature tracker (`tracker.html`) needs a ClickUp personal API token to fetch your
+tasks — get one from ClickUp (avatar, bottom-left → Settings → Apps → API Token →
+Generate). Paste it into a `.env` file in this folder (gitignored) and the server picks
+it up automatically, no need to export it yourself:
+
+```bash
+# .env
+CLICKUP_API_TOKEN=pk_your_token_here
+```
+
+By default the server also runs two background workers on a timer for as long as it stays
+up: recaps every 5 min (calls `claude -p`, so this one does cost tokens continuously) and
+the ClickUp feature-tracker every 10 min (plain ClickUp API calls — fast, and costs no
+Claude tokens at all, but still needs `CLICKUP_API_TOKEN` set). If you'd rather start the
+server only when you're about to look at the dashboard, and update it on demand via the
+`↻ refresh` buttons instead:
+
+```bash
+DISABLE_WORKERS=1 python3 usage-server.py
+```
+
 ## Files
 
 | File | Role |

@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Feature Tracker — Dev Dispatch</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Hanken+Grotesk:ital,wght@0,300;0,400;0,500;0,600;0,700;0,800;1,400;1,500&family=Geist+Mono:wght@300;400;500;600&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --paper:#f3eee2; --paper-2:#ece4d4; --paper-card:#f7f3ea;
+    --ink:#1d1a15; --ink-soft:#554f45; --ink-faint:#948c7d;
+    --rule:#d6ccb8; --rule-soft:#e3dac8;
+    --accent:#cf4f1c; --accent-deep:#9c3710; --gold:#c2902f;
+    --sky:#4d6a73; --green:#4f7a52; --red:#b1473a;
+    --shadow:18px 22px 44px -28px rgba(40,30,15,.4);
+    --serif:"Bricolage Grotesque",system-ui,sans-serif;
+    --sans:"Hanken Grotesk",system-ui,sans-serif;
+    --mono:"Geist Mono",ui-monospace,monospace;
+  }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body {
+    font-family:var(--sans); background:var(--paper); color:var(--ink);
+    line-height:1.5; -webkit-font-smoothing:antialiased; position:relative; min-height:100vh;
+  }
+  body::after {
+    content:""; position:fixed; top:0; left:0; right:0; height:300px; z-index:0; pointer-events:none;
+    background:radial-gradient(120% 130% at 78% -28%, rgba(242,193,75,.4) 0%, rgba(224,123,58,.2) 32%, rgba(207,79,28,.05) 55%, transparent 72%);
+  }
+  .wrap { position:relative; z-index:1; max-width:780px; margin:0 auto; padding:34px 26px 80px; }
+
+  .top { display:flex; align-items:baseline; justify-content:space-between; gap:16px; margin-bottom:6px; }
+  .top h1 { font-family:var(--serif); font-weight:600; font-size:30px; letter-spacing:-.02em; line-height:1.05; }
+  .top .links { display:flex; gap:8px; flex-shrink:0; }
+  .top .nav, .refresh {
+    font-family:var(--mono); font-size:12.5px; letter-spacing:.04em; color:var(--ink-soft);
+    text-decoration:none; border:1px solid var(--rule); padding:7px 13px; white-space:nowrap;
+    transition:all .2s ease; background:none; cursor:pointer;
+  }
+  .top .nav:hover, .refresh:hover { background:var(--ink); color:var(--paper); border-color:var(--ink); }
+  .refresh.spin { opacity:.6; cursor:default; }
+  .sub { font-family:var(--mono); font-size:12.5px; color:var(--ink-faint); letter-spacing:.04em; margin-bottom:18px; }
+
+  .warnbar { background:var(--ink); color:var(--paper); padding:12px 18px; margin-bottom:22px; font-family:var(--mono); font-size:12px; letter-spacing:.03em; }
+  .warnbar b { color:var(--gold); }
+
+  .board-h {
+    font-family:var(--mono); font-size:12px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent); border-bottom:2px solid var(--ink); padding-bottom:8px; margin-bottom:20px;
+    display:flex; justify-content:space-between; align-items:flex-end;
+  }
+  .board-h .n { color:var(--ink-faint); letter-spacing:.1em; }
+
+  .subject {
+    background:var(--paper-card); border:1px solid var(--rule); border-left:4px solid var(--ink-faint);
+    padding:20px 22px 18px; margin-bottom:18px; box-shadow:var(--shadow);
+  }
+  .subject.st-progress { border-left-color:var(--accent); }
+  .subject.st-review    { border-left-color:var(--sky); }
+  .subject.st-testing   { border-left-color:var(--gold); }
+  .subject.st-deploy    { border-left-color:var(--green); }
+  .subject.st-complete  { border-left-color:var(--ink-faint); }
+  .subj-head { display:flex; justify-content:space-between; align-items:flex-start; gap:14px; margin-bottom:14px; }
+  .subj-title { font-family:var(--serif); font-size:20px; font-weight:600; letter-spacing:-.015em; line-height:1.25; color:var(--ink); text-decoration:none; }
+  .subj-title:hover { color:var(--accent-deep); }
+  .status {
+    font-family:var(--mono); font-size:11px; letter-spacing:.08em; text-transform:uppercase; font-weight:600;
+    white-space:nowrap; padding:4px 10px; flex-shrink:0;
+  }
+  .status.st-progress { color:var(--accent); background:rgba(207,79,28,.12); }
+  .status.st-review    { color:var(--sky); background:rgba(77,106,115,.14); }
+  .status.st-testing   { color:var(--gold); background:rgba(194,144,47,.14); }
+  .status.st-deploy    { color:var(--green); background:rgba(79,122,82,.14); }
+  .status.st-complete  { color:var(--ink-faint); background:rgba(0,0,0,.05); }
+
+  .subj-updated { font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.03em; margin:-8px 0 14px; }
+
+  .repos-lab { font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:9px; }
+  .repo-row { display:flex; align-items:center; gap:8px; padding:7px 0; border-top:1px dotted var(--rule); flex-wrap:wrap; }
+  .repo-row:first-of-type { border-top:none; }
+  .pill {
+    font-family:var(--mono); font-size:11.5px; letter-spacing:.02em; padding:4px 9px;
+    background:var(--paper-2); border:1px solid var(--rule); color:var(--ink-soft);
+  }
+  a.pill { text-decoration:none; }
+  a.pill:hover { border-color:var(--ink-faint); color:var(--ink); }
+  .pill.merge { font-weight:600; letter-spacing:.04em; }
+  .pill.merge.m-merged { color:var(--green); background:rgba(79,122,82,.14); border-color:transparent; }
+  .pill.merge.m-review { color:var(--gold); background:rgba(194,144,47,.14); border-color:transparent; }
+  .pill.merge.m-closed { color:var(--red); background:rgba(177,71,58,.13); border-color:transparent; }
+  .pill.merge.m-unknown { color:var(--ink-faint); background:none; }
+  .pill.merge.m-none { color:var(--ink-faint); background:none; font-style:italic; }
+  .pill.auto { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); background:none; border-style:dashed; padding:3px 7px; }
+  .pr-status {
+    font-family:var(--mono); font-size:11px; letter-spacing:.02em; padding:4px 8px;
+    background:var(--paper-2); border:1px solid var(--rule); color:var(--ink-soft); cursor:pointer;
+  }
+  .pr-status.set { border-color:var(--accent); color:var(--ink); }
+  .rm-repo {
+    margin-left:auto; font-family:var(--mono); font-size:13px; color:var(--ink-faint); background:none;
+    border:none; cursor:pointer; padding:2px 6px; transition:color .15s;
+  }
+  .rm-repo:hover { color:var(--red); }
+  .no-repos { font-family:var(--mono); font-size:12px; color:var(--ink-faint); font-style:italic; padding:4px 0 2px; }
+
+  .add-repo { display:flex; gap:7px; margin-top:12px; flex-wrap:wrap; }
+  .add-repo input {
+    font-family:var(--sans); font-size:13.5px; padding:8px 10px; border:1px solid var(--rule);
+    background:var(--paper); color:var(--ink); flex:1 1 120px; min-width:0;
+  }
+  .add-repo input:focus { outline:none; border-color:var(--accent); }
+  .add-repo button {
+    font-family:var(--mono); font-size:11.5px; font-weight:500; letter-spacing:.06em; text-transform:uppercase;
+    padding:8px 14px; cursor:pointer; border:1px solid var(--ink); background:var(--ink); color:var(--paper);
+    transition:all .2s ease; flex-shrink:0;
+  }
+  .add-repo button:hover { background:var(--accent); border-color:var(--accent); }
+
+  .issue-foot { display:flex; gap:10px; margin-top:16px; padding-top:14px; border-top:1px solid var(--rule); flex-wrap:wrap; }
+  .togglebtn {
+    font-family:var(--mono); font-size:12px; letter-spacing:.05em; font-weight:500;
+    border:1px solid var(--rule); background:none; color:var(--ink-faint); padding:7px 13px; cursor:pointer; transition:all .2s ease;
+  }
+  .togglebtn:hover { border-color:var(--ink-faint); color:var(--ink); }
+  .togglebtn.on { background:var(--green); border-color:var(--green); color:#fff; }
+
+  .empty { font-family:var(--mono); font-size:13px; color:var(--ink-faint); padding:30px 0; text-align:center; }
+  .everything {
+    display:block; text-align:center; font-family:var(--mono); font-size:13px; letter-spacing:.08em;
+    text-transform:uppercase; color:var(--ink-soft); text-decoration:none;
+    border:1px dashed var(--rule); padding:15px; margin-top:10px; transition:all .2s ease;
+  }
+  .everything:hover { background:var(--paper-card); border-color:var(--ink-faint); color:var(--ink); }
+
+  /* ---------- full usage band (mirrors the dashboard) ---------- */
+  .usage {
+    margin:0 0 26px; border:1px solid var(--ink); background:var(--paper-card);
+    display:grid; grid-template-columns:1fr 1fr 0.9fr; box-shadow:var(--shadow);
+  }
+  .usage-cell { padding:18px 22px; border-right:1px solid var(--rule); position:relative; }
+  .usage-cell:last-child { border-right:none; }
+  .usage-cell .uk {
+    font-family:var(--mono); font-size:10.5px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--ink-faint); display:flex; align-items:center; gap:8px; margin-bottom:14px;
+  }
+  .usage-cell .uk .pulse {
+    width:7px; height:7px; border-radius:50%; background:var(--green);
+    box-shadow:0 0 0 0 rgba(79,122,82,.5); animation:pulse 2.2s infinite;
+  }
+  .usage-cell .uk .pulse.warn { background:var(--gold); animation:pulseW 2.2s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(79,122,82,.5);} 70%{box-shadow:0 0 0 7px rgba(79,122,82,0);} 100%{box-shadow:0 0 0 0 rgba(79,122,82,0);} }
+  @keyframes pulseW { 0%{box-shadow:0 0 0 0 rgba(194,144,47,.5);} 70%{box-shadow:0 0 0 7px rgba(194,144,47,0);} 100%{box-shadow:0 0 0 0 rgba(194,144,47,0);} }
+  .usage-cell .urow { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:11px; }
+  .usage-cell .uval { font-family:var(--serif); font-size:34px; font-weight:500; line-height:.9; letter-spacing:-.02em; }
+  .usage-cell .uval small { font-size:15px; color:var(--ink-faint); font-weight:400; }
+  .usage-cell .ureset { font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); text-align:right; line-height:1.5; }
+  .usage-cell .ureset b { color:var(--accent-deep); }
+  .gauge { height:9px; background:var(--paper-2); position:relative; overflow:hidden; border:1px solid var(--rule); }
+  .gauge .g-fill { position:absolute; inset:0 100% 0 0; transition:right 1.4s cubic-bezier(.2,.7,.2,1); }
+  .gauge .g-fill.ok { background:linear-gradient(90deg, var(--green), #6fae6f); }
+  .gauge .g-fill.warn { background:linear-gradient(90deg, var(--gold), var(--accent)); }
+  .gauge .g-fill.hi { background:linear-gradient(90deg, var(--accent), var(--accent-deep)); }
+  .gauge .tick { position:absolute; top:0; bottom:0; width:1px; background:var(--ink-faint); opacity:.4; }
+  .usage-cell .ufoot { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:9px; letter-spacing:.03em; }
+  .live-tag { font-family:var(--mono); font-size:9px; letter-spacing:.14em; color:var(--green); margin-left:auto; opacity:.9; }
+  .live-tag.stale { color:var(--red); }
+  .live-tag.flash { animation:flash .9s ease; }
+  @keyframes flash { 0%{color:var(--accent);} 100%{color:var(--green);} }
+  .models { display:flex; flex-direction:column; gap:9px; margin-top:2px; }
+  .models .m { display:grid; grid-template-columns:54px 1fr 34px; align-items:center; gap:10px; }
+  .models .m .mn { font-family:var(--mono); font-size:11px; color:var(--ink-soft); }
+  .models .m .mt { height:6px; background:var(--paper-2); position:relative; overflow:hidden; }
+  .models .m .mt i { position:absolute; inset:0 100% 0 0; background:var(--ink); transition:right 1.2s ease; }
+  .models .m .mt i.amber { background:var(--accent); }
+  .models .m .mt i.teal { background:var(--sky); }
+  .models .m .mt i.sage { background:var(--green); }
+  .models .m .mt i.gold { background:var(--gold); }
+  .models .m .mp { font-family:var(--mono); font-size:11px; color:var(--ink); text-align:right; }
+  @media (max-width: 760px) {
+    .usage { grid-template-columns:1fr; }
+    .usage-cell { border-right:none; border-bottom:1px solid var(--rule); }
+    .usage-cell:last-child { border-bottom:none; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top">
+      <h1>Feature Tracker</h1>
+      <div class="links">
+        <button class="refresh" id="refreshBtn">↻ refresh</button>
+        <a class="nav" href="/focus.html">≡ Where am I</a>
+        <a class="nav" href="/dev-dispatch.html">≡ Full dashboard</a>
+      </div>
+    </div>
+    <div class="sub" id="sub">loading your board…</div>
+
+    <section class="usage">
+      <div class="usage-cell">
+        <div class="uk"><span class="pulse" id="sessDot"></span> Current Session · 5-hour window <span id="liveTag" class="live-tag">● live</span></div>
+        <div class="urow">
+          <div class="uval"><span id="sessPct">—</span><small>%</small></div>
+          <div class="ureset" id="sessReset">loading…</div>
+        </div>
+        <div class="gauge"><div class="g-fill ok" id="sessGauge"></div></div>
+        <div class="ufoot" id="sessFoot">fetching live usage…</div>
+      </div>
+      <div class="usage-cell">
+        <div class="uk"><span class="pulse" id="weekDot"></span> Weekly Limit · 7-day rolling</div>
+        <div class="urow">
+          <div class="uval"><span id="weekPct">—</span><small>%</small></div>
+          <div class="ureset" id="weekReset">loading…</div>
+        </div>
+        <div class="gauge"><div class="g-fill ok" id="weekGauge"></div><div class="tick" style="left:80%"></div></div>
+        <div class="ufoot" id="weekFoot">&nbsp;</div>
+      </div>
+      <div class="usage-cell">
+        <div class="uk">Weekly · by model</div>
+        <div class="models" id="modelRows"></div>
+        <div class="ufoot" id="modelFoot">&nbsp;</div>
+      </div>
+    </section>
+
+    <div class="warnbar" id="warnbar" style="display:none"></div>
+
+    <div class="board-h">In flight <span class="n" id="boardN"></span></div>
+    <div id="board"><div class="empty">Fetching your ClickUp board…</div></div>
+
+    <a class="everything" href="/focus.html">▾ where am I right now — session-level view</a>
+  </div>
+
+<script>
+  const $ = id => document.getElementById(id);
+  const esc = s => (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+  // ----- full usage band (mirrors the dashboard) -----
+  let LAST = {}, resetTimers = {};
+  const band = pct => pct >= 90 ? "hi" : pct >= 70 ? "warn" : "ok";
+  const dotClass = pct => pct >= 70 ? "pulse warn" : "pulse";
+  function countdown(iso){
+    if(!iso) return "—";
+    const ms = new Date(iso) - new Date();
+    if(ms <= 0) return "resetting…";
+    const s = Math.floor(ms/1000), d=Math.floor(s/86400), h=Math.floor(s%86400/3600), m=Math.floor(s%3600/60), ss=s%60;
+    if(d>0) return `${d}d ${h}h ${m}m`;
+    if(h>0) return `${h}h ${m}m ${String(ss).padStart(2,"0")}s`;
+    return `${m}m ${String(ss).padStart(2,"0")}s`;
+  }
+  const localTime = iso => iso ? new Date(iso).toLocaleString([], {weekday:"short", hour:"2-digit", minute:"2-digit"}) : "";
+  function setGauge(el, pct){ el.className = "g-fill " + band(pct); el.style.right = (100 - Math.min(pct,100)) + "%"; }
+
+  const MODEL_BAR_COLORS = ["amber", "teal", "sage", "gold"];
+
+  // Anthropic's usage API used to expose flat seven_day_opus/seven_day_sonnet fields — those
+  // are now always null. Per-model weekly usage instead lives in limits[] as entries with
+  // kind:"weekly_scoped", one per model actually seen this week, named via scope.model.display_name.
+  function renderModels(limits){
+    const scoped = (limits || []).filter(l => l.kind === "weekly_scoped" && l.scope && l.scope.model);
+    const rows = $("modelRows");
+    if (!scoped.length){
+      rows.innerHTML = `<div class="empty" style="padding:6px 0;">No per-model breakdown available</div>`;
+      return { top: null, allZero: true };
+    }
+    rows.innerHTML = scoped.map((l, i) => {
+      const name = esc(l.scope.model.display_name || "Unknown");
+      const pct = Math.round(l.percent || 0);
+      const color = MODEL_BAR_COLORS[i % MODEL_BAR_COLORS.length];
+      return `<div class="m"><span class="mn">${name}</span><span class="mt"><i class="${color}" style="right:${100 - Math.min(pct,100)}%"></i></span><span class="mp">${pct}%</span></div>`;
+    }).join("");
+    const top = scoped.reduce((a, b) => (b.percent||0) > (a.percent||0) ? b : a, scoped[0]);
+    const allZero = scoped.every(l => (l.percent||0) === 0);
+    return { top: allZero ? null : (top.scope.model.display_name || "Unknown"), allZero };
+  }
+
+  function renderUsage(u){
+    const five = u.five_hour || {utilization:0}, week = u.seven_day || {utilization:0};
+    const fp = Math.round(five.utilization||0), wp = Math.round(week.utilization||0);
+    const changed = LAST.fp!==fp || LAST.wp!==wp;
+    LAST = {fp, wp};
+    $("sessPct").textContent = fp; $("sessDot").className = dotClass(fp); setGauge($("sessGauge"), fp);
+    $("sessFoot").textContent = (100-fp) + "% headroom left this window";
+    $("weekPct").textContent = wp; $("weekDot").className = dotClass(wp); setGauge($("weekGauge"), wp);
+    $("weekFoot").textContent = wp >= 80 ? "Near the weekly ceiling — ease off heavy runs" : "On pace for the week";
+    const models = renderModels(u.limits);
+    $("modelFoot").textContent = models.allZero ? "No model usage yet this week"
+      : `Leaning on ${models.top} this week`;
+    resetTimers.sess = five.resets_at; resetTimers.week = week.resets_at;
+    const tag = $("liveTag"); tag.classList.remove("stale"); tag.textContent = "● live";
+    if(changed){ tag.classList.add("flash"); setTimeout(()=>tag.classList.remove("flash"), 900); }
+  }
+  setInterval(() => {
+    if(resetTimers.sess) $("sessReset").innerHTML = "resets in <b>"+countdown(resetTimers.sess)+"</b><br/>"+localTime(resetTimers.sess);
+    if(resetTimers.week) $("weekReset").innerHTML = "resets in <b>"+countdown(resetTimers.week)+"</b><br/>"+localTime(resetTimers.week);
+  }, 1000);
+  let usageRetry = null;
+  async function pollUsage(){
+    try {
+      const r = await fetch("/api/usage", {cache:"no-store"});
+      if(!r.ok) throw new Error(r.status);
+      renderUsage(await r.json());
+      if(usageRetry){ clearTimeout(usageRetry); usageRetry = null; }
+    } catch(e){
+      const tag = $("liveTag"); tag.classList.add("stale"); tag.textContent = "● offline";
+      $("sessFoot").textContent = "reconnecting to usage server…";
+      if(!usageRetry) usageRetry = setTimeout(() => { usageRetry = null; pollUsage(); }, 4000);
+    }
+  }
+
+  const STATUS_CLASS = {
+    "in progress": "st-progress",
+    "in review": "st-review",
+    "in testing": "st-testing",
+    "waiting for deployment": "st-deploy",
+    "complete": "st-complete",
+  };
+  function statusClass(status){ return STATUS_CLASS[(status||"").trim().toLowerCase()] || "st-progress"; }
+
+  let PR_STATUS_OPTIONS = [];
+  function prStatusSelect(taskId, r){
+    const opts = ['<option value="">— status —</option>']
+      .concat(PR_STATUS_OPTIONS.map(o => `<option value="${esc(o)}" ${r.status===o?"selected":""}>${esc(o)}</option>`));
+    return `<select class="pr-status${r.status?" set":""}" data-task="${esc(taskId)}" data-id="${esc(r.id)}">${opts.join("")}</select>`;
+  }
+
+  function ago(iso){
+    if (!iso) return "never";
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 90) return "just now";
+    if (s < 3600) return Math.round(s/60) + "m ago";
+    if (s < 86400) return Math.round(s/3600) + "h ago";
+    return Math.round(s/86400) + "d ago";
+  }
+
+  function mergePill(r){
+    const m = r.mergeStatus || {state:"none", merged:false};
+    if (m.merged) return `<span class="pill merge m-merged">✅ Merged</span>`;
+    if (m.state === "OPEN") return `<span class="pill merge m-review">🟡 In review</span>`;
+    if (m.state === "CLOSED") return `<span class="pill merge m-closed">❌ Closed</span>`;
+    if (m.state === "none") return `<span class="pill merge m-none">— no PR yet</span>`;
+    return `<span class="pill merge m-unknown">⚠️ unknown</span>`;
+  }
+
+  function prNumber(url){
+    const m = (url||"").match(/\/pull\/(\d+)/);
+    return m ? "PR #" + m[1] : "";
+  }
+
+  function renderRepoRow(taskId, r){
+    const label = esc(r.repo || "(unnamed repo)");
+    const prLabel = r.prUrl ? prNumber(r.prUrl) : (r.branch ? esc(r.branch) : "");
+    const middle = r.prUrl
+      ? `<a class="pill" href="${esc(r.prUrl)}" target="_blank" rel="noopener">${esc(prLabel || "PR")}</a>`
+      : (r.branch ? `<span class="pill">${esc(r.branch)}</span>` : "");
+    const auto = r.source === "auto" ? `<span class="pill auto" title="found in the ClickUp task description">auto</span>` : "";
+    return `<div class="repo-row" data-id="${esc(r.id)}">
+      <span class="pill">${label}</span>
+      ${middle}
+      ${mergePill(r)}
+      ${auto}
+      ${prStatusSelect(taskId, r)}
+      <button class="rm-repo" data-task="${esc(taskId)}" data-id="${esc(r.id)}" title="remove">×</button>
+    </div>`;
+  }
+
+  function renderAddForm(taskId){
+    return `<div class="add-repo" data-task="${esc(taskId)}">
+      <input class="ar-repo" placeholder="repo" />
+      <input class="ar-branch" placeholder="branch (optional)" />
+      <input class="ar-pr" placeholder="PR URL (optional)" />
+      <button class="ar-add" data-task="${esc(taskId)}">+ add repo</button>
+    </div>`;
+  }
+
+  function renderCard(c){
+    const sc = statusClass(c.status);
+    const repos = c.repos.length
+      ? c.repos.map(r => renderRepoRow(c.taskId, r)).join("")
+      : `<div class="no-repos">No repos added yet</div>`;
+    return `<div class="subject ${sc}" data-task="${esc(c.taskId)}">
+      <div class="subj-head">
+        <a class="subj-title" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a>
+        <span class="status ${sc}">${esc(c.status)}</span>
+      </div>
+      <div class="subj-updated">updated ${ago(c.dateUpdated)}</div>
+      <div class="repos-lab">Repos</div>
+      ${repos}
+      ${renderAddForm(c.taskId)}
+      <div class="issue-foot">
+        <button class="togglebtn ${c.deployed ? "on" : ""}" data-task="${esc(c.taskId)}" data-field="deployed">🚀 Deployed</button>
+        <button class="togglebtn ${c.e2eTested ? "on" : ""}" data-task="${esc(c.taskId)}" data-field="e2eTested">🧪 E2E Tested</button>
+      </div>
+    </div>`;
+  }
+
+  function renderBoard(d){
+    PR_STATUS_OPTIONS = d.prStatusOptions || [];
+    const cards = d.cards || [];
+    $("boardN").textContent = cards.length ? `${cards.length} task${cards.length===1?"":"s"}` : "";
+    $("board").innerHTML = cards.length
+      ? cards.map(renderCard).join("")
+      : `<div class="empty">Nothing in progress / review / testing / waiting-for-deployment right now.</div>`;
+
+    $("sub").textContent = "last synced " + ago(d.fetchedAt);
+
+    const warn = $("warnbar");
+    const bits = [];
+    if (d.error) bits.push(`Last fetch error: <b>${esc(d.error)}</b>`);
+    if ((d.unmatchedStatuses||[]).length) bits.push(`Unrecognized status on the board: <b>${esc(d.unmatchedStatuses.join(", "))}</b> — not shown, check TRACKED_STATUSES`);
+    if (bits.length) { warn.style.display = "block"; warn.innerHTML = bits.join(" &middot; "); }
+    else warn.style.display = "none";
+  }
+
+  async function loadTracker(){
+    let d;
+    try { d = await (await fetch("/api/tracker", {cache:"no-store"})).json(); }
+    catch(e){ $("sub").textContent = "couldn't reach the server"; return; }
+    if (d.error && !(d.cards||[]).length) { $("board").innerHTML = `<div class="empty">${esc(d.error)}</div>`; }
+    renderBoard(d);
+  }
+
+  $("board").addEventListener("click", async e => {
+    const t = e.target.closest(".togglebtn");
+    if (t) {
+      t.classList.toggle("on");
+      await fetch("/api/tracker/toggle", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({taskId: t.dataset.task, field: t.dataset.field})});
+      return;
+    }
+    const rm = e.target.closest(".rm-repo");
+    if (rm) {
+      await fetch("/api/tracker/repo", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({taskId: rm.dataset.task, action:"remove", id: rm.dataset.id})});
+      loadTracker();
+      return;
+    }
+    const add = e.target.closest(".ar-add");
+    if (add) {
+      const row = e.target.closest(".add-repo");
+      const repo = row.querySelector(".ar-repo").value.trim();
+      const branch = row.querySelector(".ar-branch").value.trim();
+      const prUrl = row.querySelector(".ar-pr").value.trim();
+      if (!repo) return;
+      await fetch("/api/tracker/repo", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({taskId: add.dataset.task, action:"add", repo, branch, prUrl})});
+      loadTracker();
+    }
+  });
+
+  $("board").addEventListener("change", async e => {
+    const sel = e.target.closest(".pr-status");
+    if (!sel) return;
+    sel.classList.toggle("set", !!sel.value);
+    await fetch("/api/tracker/repo", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({taskId: sel.dataset.task, action:"status", id: sel.dataset.id, status: sel.value})});
+  });
+
+  async function refreshNow(){
+    const b = $("refreshBtn");
+    if (b.disabled) return;  // a refresh is already in flight — don't stack another
+    b.classList.add("spin"); b.disabled = true;
+
+    let before = null;
+    try { before = JSON.stringify((await (await fetch("/api/tracker", {cache:"no-store"})).json())); } catch(e){}
+    try { await fetch("/api/tracker/refresh", {method:"POST"}); } catch(e){}
+
+    // A real fetch is direct ClickUp API calls (task list + per-task description/comments,
+    // fetched concurrently) — usually a few seconds. Poll for the snapshot to actually
+    // change instead of guessing a delay.
+    const maxWaitMs = 2 * 60 * 1000, pollMs = 1000, started = Date.now();
+    let d = null;
+    while (Date.now() - started < maxWaitMs) {
+      const elapsed = Math.round((Date.now() - started) / 1000);
+      b.textContent = `↻ refreshing… (${elapsed}s)`;
+      await new Promise(r => setTimeout(r, pollMs));
+      try { d = await (await fetch("/api/tracker", {cache:"no-store"})).json(); }
+      catch(e){ continue; }
+      if (JSON.stringify(d) !== before) break;
+    }
+    if (d) renderBoard(d);
+    b.classList.remove("spin"); b.textContent = "↻ refresh"; b.disabled = false;
+  }
+  $("refreshBtn").addEventListener("click", refreshNow);
+
+  loadTracker();
+  setInterval(loadTracker, 30000);
+  pollUsage();
+  setInterval(pollUsage, 90000);
+</script>
+</body>
+</html>

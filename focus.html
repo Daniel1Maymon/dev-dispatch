@@ -86,6 +86,8 @@
   .models .m .mt i { position:absolute; inset:0 100% 0 0; background:var(--ink); transition:right 1.2s ease; }
   .models .m .mt i.amber { background:var(--accent); }
   .models .m .mt i.teal { background:var(--sky); }
+  .models .m .mt i.sage { background:var(--green); }
+  .models .m .mt i.gold { background:var(--gold); }
   .models .m .mp { font-family:var(--mono); font-size:11px; color:var(--ink); text-align:right; }
   @media (max-width: 760px) {
     .usage { grid-template-columns:1fr; }
@@ -296,6 +298,7 @@
       <h1>Where am I right now?</h1>
       <div class="links">
         <button class="refresh" id="refreshBtn">↻ refresh</button>
+        <a class="nav" href="/tracker.html">◈ Feature Tracker</a>
         <a class="nav" href="/dev-dispatch.html">≡ Full dashboard</a>
       </div>
     </div>
@@ -322,10 +325,7 @@
       </div>
       <div class="usage-cell">
         <div class="uk">Weekly · by model</div>
-        <div class="models">
-          <div class="m"><span class="mn">Opus</span><span class="mt"><i class="amber" id="opusBar"></i></span><span class="mp" id="opusPct">—</span></div>
-          <div class="m"><span class="mn">Sonnet</span><span class="mt"><i class="teal" id="sonBar"></i></span><span class="mp" id="sonPct">—</span></div>
-        </div>
+        <div class="models" id="modelRows"></div>
         <div class="ufoot" id="modelFoot">&nbsp;</div>
       </div>
     </section>
@@ -427,20 +427,42 @@
   const localTime = iso => iso ? new Date(iso).toLocaleString([], {weekday:"short", hour:"2-digit", minute:"2-digit"}) : "";
   const absTime = iso => iso ? new Date(iso).toLocaleString([], {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "—";
   function setGauge(el, pct){ el.className = "g-fill " + band(pct); el.style.right = (100 - Math.min(pct,100)) + "%"; }
-  function setBar(el, pctEl, pct){ el.style.right = (100 - Math.min(pct,100)) + "%"; pctEl.textContent = Math.round(pct) + "%"; }
+
+  const MODEL_BAR_COLORS = ["amber", "teal", "sage", "gold"];
+
+  // Anthropic's usage API used to expose flat seven_day_opus/seven_day_sonnet fields — those
+  // are now always null. Per-model weekly usage instead lives in limits[] as entries with
+  // kind:"weekly_scoped", one per model actually seen this week, named via scope.model.display_name.
+  function renderModels(limits){
+    const scoped = (limits || []).filter(l => l.kind === "weekly_scoped" && l.scope && l.scope.model);
+    const rows = $("modelRows");
+    if (!scoped.length){
+      rows.innerHTML = `<div class="empty" style="padding:6px 0;">No per-model breakdown available</div>`;
+      return { top: null, allZero: true };
+    }
+    rows.innerHTML = scoped.map((l, i) => {
+      const name = esc(l.scope.model.display_name || "Unknown");
+      const pct = Math.round(l.percent || 0);
+      const color = MODEL_BAR_COLORS[i % MODEL_BAR_COLORS.length];
+      return `<div class="m"><span class="mn">${name}</span><span class="mt"><i class="${color}" style="right:${100 - Math.min(pct,100)}%"></i></span><span class="mp">${pct}%</span></div>`;
+    }).join("");
+    const top = scoped.reduce((a, b) => (b.percent||0) > (a.percent||0) ? b : a, scoped[0]);
+    const allZero = scoped.every(l => (l.percent||0) === 0);
+    return { top: allZero ? null : (top.scope.model.display_name || "Unknown"), allZero };
+  }
 
   function renderUsage(u){
     const five = u.five_hour || {utilization:0}, week = u.seven_day || {utilization:0};
-    const opus = (u.seven_day_opus || {}).utilization || 0, son = (u.seven_day_sonnet || {}).utilization || 0;
     const fp = Math.round(five.utilization||0), wp = Math.round(week.utilization||0);
-    const changed = LAST.fp!==fp || LAST.wp!==wp || LAST.opus!==opus || LAST.son!==son;
-    LAST = {fp, wp, opus, son};
+    const changed = LAST.fp!==fp || LAST.wp!==wp;
+    LAST = {fp, wp};
     $("sessPct").textContent = fp; $("sessDot").className = dotClass(fp); setGauge($("sessGauge"), fp);
     $("sessFoot").textContent = (100-fp) + "% headroom left this window";
     $("weekPct").textContent = wp; $("weekDot").className = dotClass(wp); setGauge($("weekGauge"), wp);
     $("weekFoot").textContent = wp >= 80 ? "Near the weekly ceiling — ease off heavy runs" : "On pace for the week";
-    setBar($("opusBar"), $("opusPct"), opus); setBar($("sonBar"), $("sonPct"), son);
-    $("modelFoot").textContent = opus >= son ? "Leaning on Opus this week" : "Mostly Sonnet this week";
+    const models = renderModels(u.limits);
+    $("modelFoot").textContent = models.allZero ? "No model usage yet this week"
+      : `Leaning on ${models.top} this week`;
     resetTimers.sess = five.resets_at; resetTimers.week = week.resets_at;
     const tag = $("liveTag"); tag.classList.remove("stale"); tag.textContent = "● live";
     if(changed){ tag.classList.add("flash"); setTimeout(()=>tag.classList.remove("flash"), 900); }
