@@ -183,9 +183,56 @@
     .usage-cell { border-right:none; border-bottom:1px solid var(--rule); }
     .usage-cell:last-child { border-bottom:none; }
   }
+
+  .side-panel {
+    position:fixed; top:90px; width:230px; max-height:calc(100vh - 120px);
+    overflow-y:auto; z-index:2; background:var(--paper-card); border:1px solid var(--rule);
+    box-shadow:var(--shadow); padding:16px 16px 18px;
+  }
+  .working-panel { left:20px; }
+  .review-panel { right:20px; }
+  .wp-head {
+    font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); border-bottom:2px solid var(--ink); padding-bottom:8px; margin-bottom:12px;
+    display:flex; justify-content:space-between; align-items:baseline;
+  }
+  .wp-head .n { color:var(--ink-faint); letter-spacing:.1em; }
+  .wp-item { padding:8px 0; border-top:1px dotted var(--rule); }
+  .wp-item:first-child { border-top:none; }
+  .wp-item a { font-family:var(--mono); font-size:12px; color:var(--ink); text-decoration:none; display:block; }
+  .wp-item a:hover { color:var(--accent-deep); }
+  .wp-item.wp-shared { border-left:2px solid var(--gold); background:rgba(194,144,47,.1); padding-left:8px; margin-left:-10px; }
+  .wp-item.wp-shared > a { color:var(--accent-deep); }
+  .wp-task { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); margin-top:2px; }
+  .wp-task a { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); display:inline; cursor:pointer; }
+  .wp-task a:hover { color:var(--accent-deep); }
+  .wp-task .sep { color:var(--ink-faint); }
+
+  .subject.focus-flash { animation:focusFlash 1.6s ease; }
+  @keyframes focusFlash {
+    0%   { box-shadow:0 0 0 3px rgba(207,79,28,.55), var(--shadow); }
+    100% { box-shadow:var(--shadow); }
+  }
+  .repo-row.focus-flash { animation:rowFlash 1.6s ease; }
+  @keyframes rowFlash {
+    0%   { background:rgba(207,79,28,.22); }
+    100% { background:transparent; }
+  }
+  .wp-empty { font-family:var(--mono); font-size:11.5px; color:var(--ink-faint); font-style:italic; }
+  @media (max-width: 1150px) {
+    .side-panel { display:none; }
+  }
 </style>
 </head>
 <body>
+  <div class="side-panel working-panel" id="workingPanel">
+    <div class="wp-head"><span>🔧 Working On It</span><span class="n" id="wpN"></span></div>
+    <div id="wpList"><div class="wp-empty">nothing yet</div></div>
+  </div>
+  <div class="side-panel review-panel" id="reviewPanel">
+    <div class="wp-head"><span>👀 Waiting for Review</span><span class="n" id="rvN"></span></div>
+    <div id="rvList"><div class="wp-empty">nothing yet</div></div>
+  </div>
   <div class="wrap">
     <div class="top">
       <h1>Feature Tracker</h1>
@@ -324,6 +371,78 @@
     return `<select class="pr-status${r.status?" set":""}" data-task="${esc(taskId)}" data-id="${esc(r.id)}">${opts.join("")}</select>`;
   }
 
+  const WORKING_STATUS = "working on it";
+  const REVIEW_STATUSES = ["waiting for review", "waiting for re-review"];
+  let LAST_DATA = null;
+
+  function renderStatusPanel(d, countId, listId, statuses){
+    const items = [];
+    for (const c of (d.cards || [])) {
+      for (const r of (c.repos || [])) {
+        if (statuses.includes(r.status)) items.push({card: c, repo: r});
+      }
+    }
+
+    // the same PR can be linked from more than one ClickUp task (e.g. one PR closing
+    // two related features) — group those occurrences into a single entry instead of
+    // showing the same repo/PR twice
+    const groups = [];
+    const byPr = new Map();
+    for (const item of items) {
+      const key = item.repo.prUrl || null;
+      const existing = key && byPr.get(key);
+      if (existing) existing.push(item);
+      else {
+        const g = [item];
+        groups.push(g);
+        if (key) byPr.set(key, g);
+      }
+    }
+
+    $(countId).textContent = groups.length ? String(groups.length) : "";
+    $(listId).innerHTML = groups.length
+      ? groups.map(g => {
+          const {card, repo} = g[0];
+          const shared = g.length > 1;
+          const taskLinks = g.map(({card, repo: itemRepo}) =>
+            `<a href="#" data-focus-task="${esc(card.taskId)}" data-focus-repo="${esc(itemRepo.id)}" title="jump to this feature's card">${esc(card.name)}</a>`
+          ).join(`<span class="sep"> · </span>`);
+          return `<div class="wp-item${shared ? " wp-shared" : ""}">
+            <a href="${esc(repo.prUrl || card.url)}" target="_blank" rel="noopener">${esc(repo.repo || "(unnamed repo)")}${repo.prUrl ? " " + esc(prNumber(repo.prUrl)) : ""}</a>
+            <div class="wp-task">${taskLinks}</div>
+          </div>`;
+        }).join("")
+      : `<div class="wp-empty">nothing yet</div>`;
+  }
+
+  function flash(el){
+    el.classList.remove("focus-flash");
+    void el.offsetWidth;  // restart the animation if it's already mid-flash
+    el.classList.add("focus-flash");
+    setTimeout(() => el.classList.remove("focus-flash"), 1600);
+  }
+
+  function focusCard(taskId, repoId){
+    const card = document.querySelector(`.subject[data-task="${CSS.escape(taskId)}"]`);
+    if (!card) return;
+    const row = repoId ? card.querySelector(`.repo-row[data-id="${CSS.escape(repoId)}"]`) : null;
+    (row || card).scrollIntoView({behavior:"smooth", block:"center"});
+    flash(card);
+    if (row) flash(row);
+  }
+
+  document.addEventListener("click", e => {
+    const t = e.target.closest("[data-focus-task]");
+    if (!t) return;
+    e.preventDefault();
+    focusCard(t.dataset.focusTask, t.dataset.focusRepo);
+  });
+
+  function renderSidePanels(d){
+    renderStatusPanel(d, "wpN", "wpList", [WORKING_STATUS]);
+    renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES);
+  }
+
   function ago(iso){
     if (!iso) return "never";
     const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -395,12 +514,14 @@
   }
 
   function renderBoard(d){
+    LAST_DATA = d;
     PR_STATUS_OPTIONS = d.prStatusOptions || [];
     const cards = d.cards || [];
     $("boardN").textContent = cards.length ? `${cards.length} task${cards.length===1?"":"s"}` : "";
     $("board").innerHTML = cards.length
       ? cards.map(renderCard).join("")
       : `<div class="empty">Nothing in progress / review / testing / waiting-for-deployment right now.</div>`;
+    renderSidePanels(d);
 
     $("sub").textContent = "last synced " + ago(d.fetchedAt);
 
@@ -451,7 +572,23 @@
   $("board").addEventListener("change", async e => {
     const sel = e.target.closest(".pr-status");
     if (!sel) return;
-    sel.classList.toggle("set", !!sel.value);
+    if (LAST_DATA) {
+      // the same PR can appear on multiple cards (shared across ClickUp tasks) — a status
+      // change applies to every occurrence of that PR, not just the dropdown touched
+      let prUrl = null;
+      for (const c of LAST_DATA.cards || []) {
+        const r = (c.repos || []).find(x => x.id === sel.dataset.id);
+        if (r) { prUrl = r.prUrl; break; }
+      }
+      if (prUrl) {
+        for (const c of LAST_DATA.cards || []) {
+          for (const r of (c.repos || [])) {
+            if (r.prUrl === prUrl) r.status = sel.value;
+          }
+        }
+      }
+      renderBoard(LAST_DATA);
+    }
     await fetch("/api/tracker/repo", {method:"POST", headers:{"Content-Type":"application/json"},
       body: JSON.stringify({taskId: sel.dataset.task, action:"status", id: sel.dataset.id, status: sel.value})});
   });
