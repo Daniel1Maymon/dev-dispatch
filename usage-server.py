@@ -105,6 +105,7 @@ DONE_KEEP_DAYS = int(os.environ.get("DONE_KEEP_DAYS", "7"))  # done sessions van
 # links per task plus the deployed/e2e-tested toggles — nothing here is auto-derived.
 CLICKUP_PATH = os.path.join(STATE_DIR, "clickup-tasks.json")
 TRACKER_PATH = os.path.join(STATE_DIR, "feature-tracker.json")
+PR_STATUS_PATH = os.path.join(STATE_DIR, "pr-status.json")
 CLICKUP_LIST_ID = "901818457061"  # Backend Backlog, per the morning-clickup-review skill
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 CLICKUP_API_TOKEN = os.environ.get("CLICKUP_API_TOKEN", "")
@@ -1106,6 +1107,24 @@ def _tracker_entry(d, task_id):
     return d.setdefault(task_id, {"repos": [], "deployed": False, "e2eTested": False, "updatedAt": None})
 
 
+def _pr_status_load():
+    """prUrl -> work-status map. Keyed by PR URL (not by task) so the same PR shared across
+    multiple ClickUp tasks shows one status everywhere it appears, instead of drifting
+    independently per task."""
+    try:
+        with open(PR_STATUS_PATH) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _pr_status_save(d):
+    tmp = PR_STATUS_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, PR_STATUS_PATH)
+
+
 def _clickup_api(path, params=None, timeout=20):
     """GET a ClickUp API v2 endpoint directly with the personal token (CLICKUP_API_TOKEN),
     no MCP/`claude -p` round-trip. Raises on any failure (network, timeout, non-2xx, bad
@@ -1255,7 +1274,11 @@ MISS_THRESHOLD = 2  # consecutive not-found fetches required before an auto entr
 
 # Manual per-PR work-status pills — set by the user from the dashboard, independent of the
 # live GitHub merge status. Tracks where a PR sits in the review cycle, not just open/merged.
-PR_STATUS_OPTIONS = ["working on it", "waiting for review", "waiting for re-review", "blocked", "ready to merge"]
+# Keyed by PR URL (see _pr_status_load/_pr_status_save), so only repo entries with a prUrl can
+# carry a manual status — a branch-only entry (no PR yet) has nothing to key on and can't be set.
+# "merged" is auto-applied (see _repo_view) once the live GitHub status says so, overriding
+# whatever manual value was set — but still listed here so it's a valid, settable status too.
+PR_STATUS_OPTIONS = ["working on it", "waiting for review", "waiting for re-review", "blocked", "ready to merge", "merged"]
 
 
 def _merge_detected_prs(tracker, task_id, text):
@@ -1309,7 +1332,7 @@ def _merge_detected_prs(tracker, task_id, text):
             continue
         entry["repos"].append({
             "id": uuid.uuid4().hex[:8], "repo": repo, "branch": "",
-            "prUrl": url, "source": "auto", "notFoundStreak": 0, "status": "",
+            "prUrl": url, "source": "auto", "notFoundStreak": 0,
         })
         existing.add(url)
         changed = True
@@ -1436,14 +1459,32 @@ def _clickup_ts_to_iso(ms):
         return None
 
 
+def _repo_view(r, pr_status):
+    """A repo entry as shown on the dashboard: live merge status, plus the shared work-status
+    — forced to "merged" once GitHub confirms it, regardless of whatever manual status was
+    last set (a merged PR can't still be "waiting for review"). If nothing's been manually
+    set yet and the PR is live and open, default the display to "working on it" — a display
+    default only, never written to pr-status.json, so it doesn't stick once the user picks
+    anything else (including explicitly re-picking "working on it")."""
+    merge = _gh_pr_status(r.get("prUrl"))
+    if merge.get("merged"):
+        status = "merged"
+    else:
+        status = pr_status.get(r.get("prUrl"), "")
+        if not status and merge.get("state") == "OPEN":
+            status = "working on it"
+    return {**r, "status": status, "mergeStatus": merge}
+
+
 def _build_tracker():
     """Combined tracker view: ClickUp snapshot + manual repo entries + live merge status."""
     snap = _clickup_load()
     tracker = _tracker_load()
+    pr_status = _pr_status_load()
     cards = []
     for tid, t in snap.get("tasks", {}).items():
         entry = tracker.get(tid) or {"repos": [], "deployed": False, "e2eTested": False}
-        repos = [{**r, "mergeStatus": _gh_pr_status(r.get("prUrl"))} for r in entry["repos"]]
+        repos = [_repo_view(r, pr_status) for r in entry["repos"]]
         cards.append({
             "taskId": tid, "name": t.get("name", ""), "url": t.get("url", ""),
             "status": t.get("status", ""), "repos": repos,
@@ -1794,7 +1835,6 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                             "repo": body.get("repo", "").strip(),
                             "branch": body.get("branch", "").strip(),
                             "prUrl": body.get("prUrl", "").strip(),
-                            "status": "",
                         })
                     elif action == "edit":
                         for r in entry["repos"]:
@@ -1806,9 +1846,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         status = body.get("status", "")
                         if status and status not in PR_STATUS_OPTIONS:
                             return self._json({"error": f"unknown status {status}"}, 400)
-                        for r in entry["repos"]:
-                            if r["id"] == body.get("id"):
-                                r["status"] = status
+                        target = next((r for r in entry["repos"] if r["id"] == body.get("id")), None)
+                        if not target:
+                            return self._json({"error": "repo not found"}, 404)
+                        pr_url = target.get("prUrl")
+                        if not pr_url:
+                            return self._json({"error": "entry has no PR URL to key a shared status on"}, 400)
+                        # keyed by PR URL, not by task — so every task sharing this PR sees
+                        # the same status, and setting it here doesn't touch feature-tracker.json
+                        prs = _pr_status_load()
+                        if status:
+                            prs[pr_url] = status
+                        else:
+                            prs.pop(pr_url, None)
+                        _pr_status_save(prs)
                     elif action == "remove":
                         entry["repos"] = [r for r in entry["repos"] if r["id"] != body.get("id")]
                     else:
