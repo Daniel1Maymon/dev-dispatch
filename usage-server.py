@@ -106,17 +106,39 @@ DONE_KEEP_DAYS = int(os.environ.get("DONE_KEEP_DAYS", "7"))  # done sessions van
 CLICKUP_PATH = os.path.join(STATE_DIR, "clickup-tasks.json")
 TRACKER_PATH = os.path.join(STATE_DIR, "feature-tracker.json")
 PR_STATUS_PATH = os.path.join(STATE_DIR, "pr-status.json")
-CLICKUP_LIST_ID = "901818457061"  # Backend Backlog, per the morning-clickup-review skill
+PR_COMMENT_PATH = os.path.join(STATE_DIR, "pr-comments.json")
+CLICKUP_LIST_IDS = {
+    "901818457061": "📋 Backlog",    # Backend > Backlog, per the morning-clickup-review skill
+    "901818549852": "🐛 Bug Queue",  # Backend > Bug Queue
+}
 CLICKUP_API_BASE = "https://api.clickup.com/api/v2"
 CLICKUP_API_TOKEN = os.environ.get("CLICKUP_API_TOKEN", "")
 CLICKUP_INTERVAL = int(os.environ.get("CLICKUP_INTERVAL", "600"))  # worker loop, seconds
-TRACKED_STATUSES = {"in progress", "in review", "in testing", "waiting for deployment", "complete"}
-_STATUS_HINTS = ("progress", "review", "test", "deploy", "complete")  # near-miss detection only
+# Backlog's in-flight statuses, plus Bug Queue's equivalents (its workflow is scoping → in
+# design → in development → in review → testing → shipped, its own vocabulary since bugs and
+# features use different ClickUp status sets on these two lists) — "backlog"/"cancelled" are
+# excluded the same way Backlog's own "backlog"/"blocked"/"iced" are: not yet started or dead.
+TRACKED_STATUSES = {
+    "in progress", "in review", "in testing", "waiting for deployment", "complete",
+    "scoping", "in design", "in development", "ready for development", "testing", "shipped",
+}
+_STATUS_HINTS = ("progress", "review", "test", "deploy", "complete", "scop", "design", "develop", "ship")  # near-miss detection only
 _GH_CACHE = {}       # prUrl -> {"data": {...}, "at": epoch}
 GH_CACHE_TTL = 120    # seconds
 GH_TIMEOUT = 12       # subprocess timeout, so a hung `gh` can't hang a request thread
 GITHUB_ORG = "tenjin-data-enhancement"
 _ORG_REPOS_CACHE = {"at": 0, "repos": []}
+
+# ---------- PR reviews: PRs you were asked to review (or already reviewed) ----------
+# No state file — this is entirely live `gh search`/`gh pr view` data, refetched on a short
+# cache like the rest of the dashboard. `--owner` scopes the search to GITHUB_ORG, same as
+# the feature tracker's auto-PR-detection.
+_REVIEWS_CACHE = {"at": 0, "data": None}
+REVIEWS_CACHE_TTL = 60  # seconds
+_GH_LOGIN_CACHE = {"at": 0, "login": None}
+GH_LOGIN_TTL = 3600  # seconds — your own username doesn't change mid-session
+_GH_PR_DETAIL_CACHE = {}  # prUrl -> {"data": {...}, "at": epoch}
+REVIEWS_SEARCH_LIMIT = 50
 ORG_REPOS_TTL = 3600  # org repo list rarely changes
 
 # Per-session context gauge. Sessions run different model windows (200k standard, or the
@@ -1125,6 +1147,23 @@ def _pr_status_save(d):
     os.replace(tmp, PR_STATUS_PATH)
 
 
+def _pr_comment_load():
+    """prUrl -> free-text comment map. Keyed by PR URL, same rationale as _pr_status_load —
+    a PR shared across multiple ClickUp tasks shows the same comment everywhere it appears."""
+    try:
+        with open(PR_COMMENT_PATH) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _pr_comment_save(d):
+    tmp = PR_COMMENT_PATH + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(d, fh)
+    os.replace(tmp, PR_COMMENT_PATH)
+
+
 def _clickup_api(path, params=None, timeout=20):
     """GET a ClickUp API v2 endpoint directly with the personal token (CLICKUP_API_TOKEN),
     no MCP/`claude -p` round-trip. Raises on any failure (network, timeout, non-2xx, bad
@@ -1139,34 +1178,49 @@ def _clickup_api(path, params=None, timeout=20):
         return json.loads(r.read())
 
 
+def _gen_task_list_for(list_id, user_id):
+    """Fetch this user's tasks from one ClickUp list, including closed/complete ones
+    (id/name/url/status/listName/dateUpdated only — no description/comments)."""
+    data = _clickup_api(f"/list/{list_id}/task", params=[
+        ("assignees[]", user_id),
+        ("include_closed", "true"),  # "complete"/"shipped" are closed status types in ClickUp
+        ("subtasks", "true"),
+        ("order_by", "updated"),
+        ("reverse", "true"),
+    ])
+    return [
+        {
+            "id": t.get("id"),
+            "name": t.get("name"),
+            "url": t.get("url"),
+            "status": (t.get("status") or {}).get("status", ""),
+            "listName": (t.get("list") or {}).get("name", ""),
+            "dateUpdated": t.get("date_updated"),
+        }
+        for t in data.get("tasks", [])
+    ]
+
+
 def _gen_task_list():
-    """Fetch this user's Backend Backlog tasks, including closed/complete ones
-    (id/name/url/status/listName/dateUpdated only — no description/comments) directly from
-    the ClickUp REST API."""
+    """Fetch this user's tasks across every list in CLICKUP_LIST_IDS (Backlog + Bug Queue),
+    directly from the ClickUp REST API. One list failing doesn't blank the others — only a
+    total failure (every list errors) reports None to the caller."""
     for attempt in (1, 2):
         try:
             user_id = _clickup_api("/user")["user"]["id"]
-            data = _clickup_api(f"/list/{CLICKUP_LIST_ID}/task", params=[
-                ("assignees[]", user_id),
-                ("include_closed", "true"),  # "complete" is a closed status type in ClickUp
-                ("subtasks", "true"),
-                ("order_by", "updated"),
-                ("reverse", "true"),
-            ])
-            return [
-                {
-                    "id": t.get("id"),
-                    "name": t.get("name"),
-                    "url": t.get("url"),
-                    "status": (t.get("status") or {}).get("status", ""),
-                    "listName": (t.get("list") or {}).get("name", ""),
-                    "dateUpdated": t.get("date_updated"),
-                }
-                for t in data.get("tasks", [])
-            ]
         except Exception as e:
             suffix = "retrying" if attempt == 1 else "giving up"
-            print(f"[clickup] task-list attempt {attempt} failed: {e} — {suffix}")
+            print(f"[clickup] user lookup attempt {attempt} failed: {e} — {suffix}")
+            continue
+        tasks, any_ok = [], False
+        for list_id in CLICKUP_LIST_IDS:
+            try:
+                tasks.extend(_gen_task_list_for(list_id, user_id))
+                any_ok = True
+            except Exception as e:
+                print(f"[clickup] task-list fetch failed for list {list_id}: {e}")
+        if any_ok:
+            return tasks
     return None
 
 
@@ -1459,7 +1513,7 @@ def _clickup_ts_to_iso(ms):
         return None
 
 
-def _repo_view(r, pr_status):
+def _repo_view(r, pr_status, pr_comments):
     """A repo entry as shown on the dashboard: live merge status, plus the shared work-status
     — forced to "merged" once GitHub confirms it, regardless of whatever manual status was
     last set (a merged PR can't still be "waiting for review"). If nothing's been manually
@@ -1473,7 +1527,8 @@ def _repo_view(r, pr_status):
         status = pr_status.get(r.get("prUrl"), "")
         if not status and merge.get("state") == "OPEN":
             status = "working on it"
-    return {**r, "status": status, "mergeStatus": merge}
+    comment = pr_comments.get(r.get("prUrl"), "")
+    return {**r, "status": status, "mergeStatus": merge, "comment": comment}
 
 
 def _build_tracker():
@@ -1481,13 +1536,14 @@ def _build_tracker():
     snap = _clickup_load()
     tracker = _tracker_load()
     pr_status = _pr_status_load()
+    pr_comments = _pr_comment_load()
     cards = []
     for tid, t in snap.get("tasks", {}).items():
         entry = tracker.get(tid) or {"repos": [], "deployed": False, "e2eTested": False}
-        repos = [_repo_view(r, pr_status) for r in entry["repos"]]
+        repos = [_repo_view(r, pr_status, pr_comments) for r in entry["repos"]]
         cards.append({
             "taskId": tid, "name": t.get("name", ""), "url": t.get("url", ""),
-            "status": t.get("status", ""), "repos": repos,
+            "status": t.get("status", ""), "repos": repos, "listName": t.get("listName", ""),
             "dateUpdated": _clickup_ts_to_iso(t.get("dateUpdated")),
             "deployed": bool(entry.get("deployed")), "e2eTested": bool(entry.get("e2eTested")),
         })
@@ -1495,6 +1551,129 @@ def _build_tracker():
     return {"cards": cards, "fetchedAt": snap.get("fetchedAt"),
             "error": snap.get("error"), "unmatchedStatuses": snap.get("unmatchedStatuses", []),
             "prStatusOptions": PR_STATUS_OPTIONS}
+
+
+def _gh_login():
+    """Your own GitHub login, via `gh api user`. Cached for GH_LOGIN_TTL — used to tell your
+    own reviews apart from everyone else's on a PR."""
+    now = time.time()
+    if _GH_LOGIN_CACHE["login"] and now - _GH_LOGIN_CACHE["at"] < GH_LOGIN_TTL:
+        return _GH_LOGIN_CACHE["login"]
+    try:
+        res = subprocess.run(["gh", "api", "user", "-q", ".login"],
+                              capture_output=True, text=True, timeout=GH_TIMEOUT)
+        login = res.stdout.strip() if res.returncode == 0 else None
+    except Exception:
+        login = None
+    if login:
+        _GH_LOGIN_CACHE.update(at=now, login=login)
+    return login
+
+
+def _gh_search_prs(extra_args):
+    """Run `gh search prs --owner GITHUB_ORG <extra_args>` and return the parsed JSON list,
+    or [] on any failure — a bad/empty search shouldn't take the whole page down."""
+    fields = "number,title,url,repository,updatedAt,author,state,isDraft"
+    cmd = ["gh", "search", "prs", "--owner", GITHUB_ORG, "--json", fields,
+           "--limit", str(REVIEWS_SEARCH_LIMIT), *extra_args]
+    try:
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=GH_TIMEOUT)
+        if res.returncode != 0:
+            return []
+        return json.loads(res.stdout)
+    except Exception:
+        return []
+
+
+def _gh_pr_review_detail(pr_url):
+    """Per-PR review detail (state, reviews, pending review requests) via `gh pr view`.
+    Cached like _gh_pr_status — never raises, so one bad PR doesn't blank the whole page."""
+    now = time.time()
+    hit = _GH_PR_DETAIL_CACHE.get(pr_url)
+    if hit and now - hit["at"] < GH_CACHE_TTL:
+        return hit["data"]
+    try:
+        res = subprocess.run(
+            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt,reviews,reviewRequests,isDraft"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+        )
+        if res.returncode != 0:
+            data = {"state": "UNKNOWN", "merged": False, "reviews": [], "reviewRequests": []}
+        else:
+            j = json.loads(res.stdout)
+            data = {
+                "state": j.get("state", "UNKNOWN"),
+                "merged": bool(j.get("mergedAt")),
+                "isDraft": bool(j.get("isDraft")),
+                "reviews": j.get("reviews") or [],
+                "reviewRequests": j.get("reviewRequests") or [],
+            }
+    except Exception:
+        data = {"state": "UNKNOWN", "merged": False, "reviews": [], "reviewRequests": []}
+    _GH_PR_DETAIL_CACHE[pr_url] = {"data": data, "at": now}
+    return data
+
+
+def _build_reviews():
+    """PRs you were asked to review (pending) or have already reviewed, across GITHUB_ORG.
+    Two `gh search prs` calls find the candidate PRs; `gh pr view` (cached) fills in your
+    actual review verdict on each, since search doesn't expose that."""
+    now = time.time()
+    if _REVIEWS_CACHE["data"] and now - _REVIEWS_CACHE["at"] < REVIEWS_CACHE_TTL:
+        return _REVIEWS_CACHE["data"]
+
+    login = _gh_login()
+    if not login:
+        data = {"cards": [], "fetchedAt": None, "error": "could not resolve your GitHub login (gh auth status?)"}
+        _REVIEWS_CACHE.update(at=now, data=data)
+        return data
+
+    pending = _gh_search_prs(["--review-requested", login, "--state", "open"])
+    reviewed = _gh_search_prs(["--reviewed-by", login])
+
+    by_url = {}
+    for pr in pending + reviewed:
+        # GitHub counts your own comments/self-approvals on your own PR as a "review", so
+        # --reviewed-by=@me includes PRs you authored — exclude those, this page is only for
+        # PRs someone else opened and asked you to review.
+        if (pr.get("author") or {}).get("login") == login:
+            continue
+        by_url.setdefault(pr["url"], pr)
+
+    cards = []
+    for url, pr in by_url.items():
+        detail = _gh_pr_review_detail(url)
+        my_reviews = [r for r in detail["reviews"] if (r.get("author") or {}).get("login") == login]
+        my_reviews.sort(key=lambda r: r.get("submittedAt") or "")
+        my_verdict = my_reviews[-1]["state"] if my_reviews else None
+        pending_login = {(rr.get("login") or "") for rr in detail["reviewRequests"] if rr.get("__typename") == "User"}
+        state = "MERGED" if detail["merged"] else detail["state"]
+        pending_review = login in pending_login
+        # you blocked the PR and it's still open, and nobody's re-requested you yet — the
+        # ball is in the author's court, not yours. Distinct from "approved"/"commented" PRs,
+        # which need no further action from anyone, and from "pendingReview" ones re-requested
+        # after you'd already left a review (those show as awaiting-you instead).
+        awaiting_author = state == "OPEN" and my_verdict == "CHANGES_REQUESTED" and not pending_review
+        cards.append({
+            "url": url, "number": pr.get("number"), "title": pr.get("title", ""),
+            "repo": (pr.get("repository") or {}).get("name", ""),
+            "author": (pr.get("author") or {}).get("login", ""),
+            "updatedAt": pr.get("updatedAt"),
+            "state": state,
+            "isDraft": detail.get("isDraft", False),
+            "pendingReview": pending_review,
+            "myVerdict": my_verdict,
+            "awaitingAuthor": awaiting_author,
+        })
+
+    # PRs still waiting on you first, then most-recently-updated (stable sort: order by
+    # updatedAt first, then by pendingReview so that ordering is preserved within each group)
+    cards.sort(key=lambda c: c["updatedAt"] or "", reverse=True)
+    cards.sort(key=lambda c: c["pendingReview"], reverse=True)
+
+    data = {"cards": cards, "fetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "error": None}
+    _REVIEWS_CACHE.update(at=now, data=data)
+    return data
 
 
 def _recap_worker():
@@ -1860,6 +2039,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                         else:
                             prs.pop(pr_url, None)
                         _pr_status_save(prs)
+                    elif action == "comment":
+                        target = next((r for r in entry["repos"] if r["id"] == body.get("id")), None)
+                        if not target:
+                            return self._json({"error": "repo not found"}, 404)
+                        pr_url = target.get("prUrl")
+                        if not pr_url:
+                            return self._json({"error": "entry has no PR URL to key a shared comment on"}, 400)
+                        # keyed by PR URL, same rationale as the status action above
+                        comment = (body.get("comment") or "").strip()
+                        comments = _pr_comment_load()
+                        if comment:
+                            comments[pr_url] = comment
+                        else:
+                            comments.pop(pr_url, None)
+                        _pr_comment_save(comments)
                     elif action == "remove":
                         entry["repos"] = [r for r in entry["repos"] if r["id"] != body.get("id")]
                     else:
@@ -1892,6 +2086,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             _GH_CACHE.clear()
             threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
+        if self.path.startswith("/api/reviews/refresh"):
+            # drop cached search results + per-PR detail so the next GET refetches live
+            _REVIEWS_CACHE.update(at=0, data=None)
+            _GH_PR_DETAIL_CACHE.clear()
+            return self._json({"ok": True})
         if self.path.startswith("/api/recap/refresh"):
             # force a regeneration of recaps for changed sessions, off-thread
             if _RECAP_REFRESH_LOCK.locked():
@@ -2011,6 +2210,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/tracker"):
             try:
                 self._json(_build_tracker())
+            except Exception as e:
+                self._json({"error": str(e)}, 502)
+            return
+        if self.path.startswith("/api/reviews"):
+            try:
+                self._json(_build_reviews())
             except Exception as e:
                 self._json({"error": str(e)}, 502)
             return

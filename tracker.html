@@ -75,6 +75,12 @@
   .status.st-deploy    { color:var(--green); background:rgba(79,122,82,.14); }
   .status.st-complete  { color:var(--ink-faint); background:rgba(0,0,0,.05); }
 
+  .subj-right { display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex-shrink:0; }
+  .subj-list {
+    font-family:var(--mono); font-size:10px; letter-spacing:.05em; color:var(--ink-faint);
+    white-space:nowrap;
+  }
+
   .subj-updated { font-family:var(--mono); font-size:11px; color:var(--ink-faint); letter-spacing:.03em; margin:-8px 0 14px; }
 
   .repos-lab { font-family:var(--mono); font-size:10.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--ink-faint); margin-bottom:9px; }
@@ -97,6 +103,15 @@
     font-family:var(--mono); font-size:11px; letter-spacing:.02em; padding:4px 8px;
     background:var(--paper-2); border:1px solid var(--rule); color:var(--ink-soft); cursor:pointer;
   }
+  .repo-comment-row { padding:0 0 9px; }
+  .comment-input {
+    width:100%; font-family:var(--sans); font-size:12.5px; padding:6px 10px;
+    border:1px solid var(--rule); background:var(--paper); color:var(--ink-soft);
+    resize:vertical; min-height:30px;
+  }
+  .comment-input:focus { outline:none; border-color:var(--accent); color:var(--ink); }
+  .comment-input.set { border-color:var(--rule-soft); color:var(--ink); background:var(--paper-2); }
+  .comment-input.saving { border-color:var(--gold); }
   .pr-status.set { border-color:var(--accent); color:var(--ink); }
   .rm-repo {
     margin-left:auto; font-family:var(--mono); font-size:13px; color:var(--ink-faint); background:none;
@@ -238,6 +253,7 @@
       <h1>Feature Tracker</h1>
       <div class="links">
         <button class="refresh" id="refreshBtn">↻ refresh</button>
+        <a class="nav" href="/reviews.html">👀 PR Reviews</a>
         <a class="nav" href="/focus.html">≡ Where am I</a>
         <a class="nav" href="/dev-dispatch.html">≡ Full dashboard</a>
       </div>
@@ -361,6 +377,13 @@
     "in testing": "st-testing",
     "waiting for deployment": "st-deploy",
     "complete": "st-complete",
+    // Bug Queue's own status vocabulary — mapped onto the same visual classes
+    "scoping": "st-progress",
+    "in design": "st-progress",
+    "in development": "st-progress",
+    "ready for development": "st-progress",
+    "testing": "st-testing",
+    "shipped": "st-complete",
   };
   function statusClass(status){ return STATUS_CLASS[(status||"").trim().toLowerCase()] || "st-progress"; }
 
@@ -483,6 +506,15 @@
     </div>`;
   }
 
+  function renderCommentRow(taskId, r){
+    if (!r.prUrl) return "";  // comments are keyed by PR URL — nothing to attach to without one
+    const has = !!(r.comment || "").trim();
+    return `<div class="repo-comment-row">
+      <textarea class="comment-input${has ? " set" : ""}" rows="1" data-task="${esc(taskId)}" data-id="${esc(r.id)}"
+        placeholder="add a comment on this PR…">${esc(r.comment || "")}</textarea>
+    </div>`;
+  }
+
   function renderAddForm(taskId){
     return `<div class="add-repo" data-task="${esc(taskId)}">
       <input class="ar-repo" placeholder="repo" />
@@ -495,12 +527,15 @@
   function renderCard(c){
     const sc = statusClass(c.status);
     const repos = c.repos.length
-      ? c.repos.map(r => renderRepoRow(c.taskId, r)).join("")
+      ? c.repos.map(r => renderRepoRow(c.taskId, r) + renderCommentRow(c.taskId, r)).join("")
       : `<div class="no-repos">No repos added yet</div>`;
     return `<div class="subject ${sc}" data-task="${esc(c.taskId)}">
       <div class="subj-head">
         <a class="subj-title" href="${esc(c.url)}" target="_blank" rel="noopener">${esc(c.name)}</a>
-        <span class="status ${sc}">${esc(c.status)}</span>
+        <div class="subj-right">
+          <span class="status ${sc}">${esc(c.status)}</span>
+          ${c.listName ? `<span class="subj-list">${esc(c.listName)}</span>` : ""}
+        </div>
       </div>
       <div class="subj-updated">updated ${ago(c.dateUpdated)}</div>
       <div class="repos-lab">Repos</div>
@@ -568,6 +603,27 @@
       loadTracker();
     }
   });
+
+  const commentSaveTimers = new Map();
+  async function saveComment(el){
+    el.classList.remove("saving");
+    await fetch("/api/tracker/repo", {method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({taskId: el.dataset.task, action:"comment", id: el.dataset.id, comment: el.value})});
+    el.classList.toggle("set", !!el.value.trim());
+  }
+  $("board").addEventListener("input", e => {
+    const el = e.target.closest(".comment-input");
+    if (!el) return;
+    el.classList.add("saving");
+    clearTimeout(commentSaveTimers.get(el.dataset.id));
+    commentSaveTimers.set(el.dataset.id, setTimeout(() => saveComment(el), 800));
+  });
+  $("board").addEventListener("blur", e => {
+    const el = e.target.closest && e.target.closest(".comment-input");
+    if (!el) return;
+    clearTimeout(commentSaveTimers.get(el.dataset.id));
+    saveComment(el);
+  }, true);
 
   $("board").addEventListener("change", async e => {
     const sel = e.target.closest(".pr-status");
