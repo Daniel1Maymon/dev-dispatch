@@ -161,6 +161,7 @@
   }
 
   function verdictBadge(c){
+    if (c.needsReply) return `<span class="verdict v-pending">💬 Author replied — take another look</span>`;
     if (c.pendingReview) return `<span class="verdict v-pending">👀 Awaiting your review</span>`;
     if (c.awaitingAuthor) return `<span class="verdict v-waiting-author">⏳ Waiting on author</span>`;
     if (c.myVerdict && VERDICT_LABEL[c.myVerdict]) {

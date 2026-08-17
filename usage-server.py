@@ -123,7 +123,6 @@ TRACKED_STATUSES = {
     "scoping", "in design", "in development", "ready for development", "testing", "shipped",
 }
 _STATUS_HINTS = ("progress", "review", "test", "deploy", "complete", "scop", "design", "develop", "ship")  # near-miss detection only
-_GH_CACHE = {}       # prUrl -> {"data": {...}, "at": epoch}
 GH_CACHE_TTL = 120    # seconds
 GH_TIMEOUT = 12       # subprocess timeout, so a hung `gh` can't hang a request thread
 GITHUB_ORG = "tenjin-data-enhancement"
@@ -1326,12 +1325,12 @@ def _extract_pr_urls(text):
 
 MISS_THRESHOLD = 2  # consecutive not-found fetches required before an auto entry is dropped
 
-# Manual per-PR work-status pills — set by the user from the dashboard, independent of the
-# live GitHub merge status. Tracks where a PR sits in the review cycle, not just open/merged.
-# Keyed by PR URL (see _pr_status_load/_pr_status_save), so only repo entries with a prUrl can
-# carry a manual status — a branch-only entry (no PR yet) has nothing to key on and can't be set.
-# "merged" is auto-applied (see _repo_view) once the live GitHub status says so, overriding
-# whatever manual value was set — but still listed here so it's a valid, settable status too.
+# Per-PR work-status pills. On every refresh these are recomputed from the PR's live GitHub
+# review state (see _classify_pr_status) — draft, review requested, changes requested, approved,
+# merged all map onto one of these, the same way "merged" already auto-overrode whatever was
+# there before. The dropdown on the dashboard still writes to pr-status.json (_pr_status_load/
+# _pr_status_save, keyed by PR URL), but that manual pick is now only the fallback shown when
+# GitHub itself has nothing to say — no PR yet, or a PR closed without merging.
 PR_STATUS_OPTIONS = ["working on it", "waiting for review", "waiting for re-review", "blocked", "ready to merge", "merged"]
 
 
@@ -1478,28 +1477,45 @@ def _clickup_worker():
         time.sleep(CLICKUP_INTERVAL)
 
 
-def _gh_pr_status(pr_url):
-    """Live merge status for one PR via `gh pr view`. Cached briefly; never raises."""
-    if not pr_url:
-        return {"state": "none", "merged": False}
-    now = time.time()
-    hit = _GH_CACHE.get(pr_url)
-    if hit and now - hit["at"] < GH_CACHE_TTL:
-        return hit["data"]
-    try:
-        res = subprocess.run(
-            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt"],
-            capture_output=True, text=True, timeout=GH_TIMEOUT,
-        )
-        if res.returncode != 0:
-            data = {"state": "unknown", "merged": False, "error": (res.stderr or "").strip()[:200]}
-        else:
-            j = json.loads(res.stdout)
-            data = {"state": j.get("state", "unknown"), "merged": bool(j.get("mergedAt"))}
-    except Exception as e:
-        data = {"state": "unknown", "merged": False, "error": str(e)}
-    _GH_CACHE[pr_url] = {"data": data, "at": now}
-    return data
+def _classify_pr_status(detail, login):
+    """Map one PR's live GitHub review state (from _gh_pr_review_detail) onto a PR_STATUS_OPTIONS
+    value, using the same rules as the morning PR review: merged/draft short-circuit everything
+    else; otherwise the latest review per human reviewer (bots and your own reviews excluded)
+    decides — anyone's latest review still CHANGES_REQUESTED means the ball is in your court
+    ("blocked") unless you've already re-requested them ("waiting for re-review"); no
+    CHANGES_REQUESTED but someone's still requested means "waiting for review"; an APPROVED with
+    nothing outstanding means "ready to merge". Returns "" when GitHub has no opinion (PR closed
+    without merging, or no reviews/requests at all yet) so the caller can fall back to whatever
+    was manually set."""
+    if detail.get("merged"):
+        return "merged"
+    if detail.get("isDraft"):
+        return "working on it"
+    if detail.get("state") != "OPEN":
+        return ""
+
+    requested = {
+        (rr.get("login") or "") for rr in detail.get("reviewRequests", [])
+        if rr.get("__typename") == "User" and not (rr.get("login") or "").endswith("[bot]")
+    }
+
+    latest_state = {}
+    for r in sorted(detail.get("reviews", []), key=lambda r: r.get("submittedAt") or ""):
+        reviewer = (r.get("author") or {}).get("login") or ""
+        if not reviewer or reviewer == login or reviewer.endswith("[bot]"):
+            continue
+        latest_state[reviewer] = r.get("state")  # later entries overwrite -> latest per reviewer
+
+    changes_requested = {rev for rev, s in latest_state.items() if s == "CHANGES_REQUESTED"}
+    approved = {rev for rev, s in latest_state.items() if s == "APPROVED"}
+
+    if changes_requested:
+        return "waiting for re-review" if changes_requested & requested else "blocked"
+    if requested:
+        return "waiting for review"
+    if approved:
+        return "ready to merge"
+    return ""
 
 
 def _clickup_ts_to_iso(ms):
@@ -1515,20 +1531,26 @@ def _clickup_ts_to_iso(ms):
 
 def _repo_view(r, pr_status, pr_comments):
     """A repo entry as shown on the dashboard: live merge status, plus the shared work-status
-    — forced to "merged" once GitHub confirms it, regardless of whatever manual status was
-    last set (a merged PR can't still be "waiting for review"). If nothing's been manually
-    set yet and the PR is live and open, default the display to "working on it" — a display
-    default only, never written to pr-status.json, so it doesn't stick once the user picks
-    anything else (including explicitly re-picking "working on it")."""
-    merge = _gh_pr_status(r.get("prUrl"))
-    if merge.get("merged"):
-        status = "merged"
-    else:
-        status = pr_status.get(r.get("prUrl"), "")
-        if not status and merge.get("state") == "OPEN":
-            status = "working on it"
-    comment = pr_comments.get(r.get("prUrl"), "")
-    return {**r, "status": status, "mergeStatus": merge, "comment": comment}
+    pill — recomputed from the PR's live GitHub review state (_classify_pr_status) on every
+    refresh, overriding whatever manual status was last set (a PR with changes requested can't
+    still show "ready to merge" just because someone picked that yesterday). Falls back to the
+    manually-set value only when GitHub has no opinion (no PR yet, or one closed unmerged).
+
+    On top of that: if the pill would otherwise read "waiting for review"/"waiting for
+    re-review" but a reviewer left a comment thread you (the PR author) haven't replied to
+    yet, override to "working on it" — that's the exact manual check this replaces (open the
+    PR, look for an unanswered conversation, flip the status back yourself)."""
+    pr_url = r.get("prUrl")
+    login = _gh_login()
+    detail = _gh_pr_review_detail(pr_url) if pr_url else {"state": "none", "merged": False}
+    status = _classify_pr_status(detail, login) or pr_status.get(pr_url, "")
+    needs_reply = False
+    if pr_url and status in ("waiting for review", "waiting for re-review") and _gh_pr_has_unanswered_thread(pr_url, login):
+        needs_reply = True
+        status = "working on it"
+    merge = {"state": detail.get("state", "none"), "merged": bool(detail.get("merged"))}
+    comment = pr_comments.get(pr_url, "")
+    return {**r, "status": status, "mergeStatus": merge, "comment": comment, "needsReply": needs_reply}
 
 
 def _build_tracker():
@@ -1587,7 +1609,7 @@ def _gh_search_prs(extra_args):
 
 def _gh_pr_review_detail(pr_url):
     """Per-PR review detail (state, reviews, pending review requests) via `gh pr view`.
-    Cached like _gh_pr_status — never raises, so one bad PR doesn't blank the whole page."""
+    Cached briefly; never raises, so one bad PR doesn't blank the whole page."""
     now = time.time()
     hit = _GH_PR_DETAIL_CACHE.get(pr_url)
     if hit and now - hit["at"] < GH_CACHE_TTL:
@@ -1611,6 +1633,65 @@ def _gh_pr_review_detail(pr_url):
     except Exception:
         data = {"state": "UNKNOWN", "merged": False, "reviews": [], "reviewRequests": []}
     _GH_PR_DETAIL_CACHE[pr_url] = {"data": data, "at": now}
+    return data
+
+
+_PR_URL_EXACT_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$")
+_GH_THREADS_CACHE = {}  # prUrl -> {"data": bool, "at": epoch}
+_REVIEW_THREADS_QUERY = """
+query($owner:String!, $name:String!, $number:Int!) {
+  repository(owner:$owner, name:$name) {
+    pullRequest(number:$number) {
+      reviewThreads(first:100) {
+        nodes { isResolved comments(last:1) { nodes { author { login __typename } } } }
+      }
+    }
+  }
+}"""
+
+
+def _gh_pr_has_unanswered_thread(pr_url, login):
+    """True if pr_url has a review conversation thread that's unresolved AND whose latest
+    comment isn't from `login` — i.e. a human reviewer left a comment there that `login`
+    hasn't replied to yet. Threads last-commented by a bot (Copilot's auto-review, etc. —
+    GraphQL reports these with author __typename "Bot") never count: an unanswered Copilot
+    comment shouldn't flip the status back to "working on it". `gh pr view --json` has no
+    reviewThreads field, so this goes straight to GitHub's GraphQL API. Cached like
+    _gh_pr_review_detail; never raises — a failed check reads as "nothing pending" rather
+    than blanking the page."""
+    if not pr_url or not login:
+        return False
+    now = time.time()
+    hit = _GH_THREADS_CACHE.get(pr_url)
+    if hit and now - hit["at"] < GH_CACHE_TTL:
+        return hit["data"]
+    m = _PR_URL_EXACT_RE.match(pr_url)
+    if not m:
+        return False
+    owner, name, number = m.group(1), m.group(2), m.group(3)
+    try:
+        res = subprocess.run(
+            ["gh", "api", "graphql", "-f", f"query={_REVIEW_THREADS_QUERY}",
+             "-f", f"owner={owner}", "-f", f"name={name}", "-F", f"number={number}"],
+            capture_output=True, text=True, timeout=GH_TIMEOUT,
+        )
+        if res.returncode != 0:
+            data = False
+        else:
+            pr = (((json.loads(res.stdout).get("data") or {}).get("repository") or {})
+                  .get("pullRequest") or {})
+            nodes = ((pr.get("reviewThreads") or {}).get("nodes")) or []
+
+            def _needs_reply(n):
+                if n.get("isResolved"):
+                    return False
+                author = (((n.get("comments") or {}).get("nodes") or [{}])[-1].get("author")) or {}
+                return author.get("__typename") != "Bot" and author.get("login") != login
+
+            data = any(_needs_reply(n) for n in nodes)
+    except Exception:
+        data = False
+    _GH_THREADS_CACHE[pr_url] = {"data": data, "at": now}
     return data
 
 
@@ -1649,6 +1730,12 @@ def _build_reviews():
         pending_login = {(rr.get("login") or "") for rr in detail["reviewRequests"] if rr.get("__typename") == "User"}
         state = "MERGED" if detail["merged"] else detail["state"]
         pending_review = login in pending_login
+        # the author replied to a thread you left and it's still unresolved — that's back in
+        # your court even if nobody formally re-requested your review, same signal the
+        # tracker uses to flip a PR back to "working on it".
+        needs_reply = state == "OPEN" and _gh_pr_has_unanswered_thread(url, login)
+        if needs_reply:
+            pending_review = True
         # you blocked the PR and it's still open, and nobody's re-requested you yet — the
         # ball is in the author's court, not yours. Distinct from "approved"/"commented" PRs,
         # which need no further action from anyone, and from "pendingReview" ones re-requested
@@ -1664,6 +1751,7 @@ def _build_reviews():
             "pendingReview": pending_review,
             "myVerdict": my_verdict,
             "awaitingAuthor": awaiting_author,
+            "needsReply": needs_reply,
         })
 
     # PRs still waiting on you first, then most-recently-updated (stable sort: order by
@@ -2080,10 +2168,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
         if self.path.startswith("/api/tracker/refresh"):
-            # force a re-pull of the ClickUp snapshot + drop cached PR merge status, off-thread
+            # force a re-pull of the ClickUp snapshot + drop cached PR review status, off-thread
             if _CLICKUP_REFRESH_LOCK.locked():
                 return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
-            _GH_CACHE.clear()
+            _GH_PR_DETAIL_CACHE.clear()
             threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/reviews/refresh"):

@@ -99,6 +99,7 @@
   .pill.merge.m-unknown { color:var(--ink-faint); background:none; }
   .pill.merge.m-none { color:var(--ink-faint); background:none; font-style:italic; }
   .pill.auto { font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-faint); background:none; border-style:dashed; padding:3px 7px; }
+  .pill.needs-reply { color:var(--red); background:rgba(177,71,58,.13); border-color:transparent; font-weight:600; }
   .pr-status {
     font-family:var(--mono); font-size:11px; letter-spacing:.02em; padding:4px 8px;
     background:var(--paper-2); border:1px solid var(--rule); color:var(--ink-soft); cursor:pointer;
@@ -241,7 +242,7 @@
 </head>
 <body>
   <div class="side-panel working-panel" id="workingPanel">
-    <div class="wp-head"><span>🔧 Working On It</span><span class="n" id="wpN"></span></div>
+    <div class="wp-head"><span>🔧 Working On It & Blocked</span><span class="n" id="wpN"></span></div>
     <div id="wpList"><div class="wp-empty">nothing yet</div></div>
   </div>
   <div class="side-panel review-panel" id="reviewPanel">
@@ -394,7 +395,7 @@
     return `<select class="pr-status${r.status?" set":""}" data-task="${esc(taskId)}" data-id="${esc(r.id)}">${opts.join("")}</select>`;
   }
 
-  const WORKING_STATUS = "working on it";
+  const WORKING_STATUSES = ["working on it", "blocked"];
   const REVIEW_STATUSES = ["waiting for review", "waiting for re-review"];
   let LAST_DATA = null;
 
@@ -462,7 +463,7 @@
   });
 
   function renderSidePanels(d){
-    renderStatusPanel(d, "wpN", "wpList", [WORKING_STATUS]);
+    renderStatusPanel(d, "wpN", "wpList", WORKING_STATUSES);
     renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES);
   }
 
@@ -496,11 +497,15 @@
       ? `<a class="pill" href="${esc(r.prUrl)}" target="_blank" rel="noopener">${esc(prLabel || "PR")}</a>`
       : (r.branch ? `<span class="pill">${esc(r.branch)}</span>` : "");
     const auto = r.source === "auto" ? `<span class="pill auto" title="found in the ClickUp task description">auto</span>` : "";
+    const needsReply = r.needsReply
+      ? `<span class="pill needs-reply" title="a reviewer left a comment thread you haven't replied to yet — status auto-reset to working on it">💬 needs your reply</span>`
+      : "";
     return `<div class="repo-row" data-id="${esc(r.id)}">
       <span class="pill">${label}</span>
       ${middle}
       ${mergePill(r)}
       ${auto}
+      ${needsReply}
       ${prStatusSelect(taskId, r)}
       <button class="rm-repo" data-task="${esc(taskId)}" data-id="${esc(r.id)}" title="remove">×</button>
     </div>`;
