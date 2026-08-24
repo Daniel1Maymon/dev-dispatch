@@ -1545,7 +1545,9 @@ def _repo_view(r, pr_status, pr_comments):
     detail = _gh_pr_review_detail(pr_url) if pr_url else {"state": "none", "merged": False}
     status = _classify_pr_status(detail, login) or pr_status.get(pr_url, "")
     needs_reply = False
-    if pr_url and status in ("waiting for review", "waiting for re-review") and _gh_pr_has_unanswered_thread(pr_url, login):
+    if (pr_url and detail.get("state") == "OPEN"
+            and status in ("waiting for review", "waiting for re-review", "")
+            and _gh_pr_has_unanswered_thread(pr_url, login)):
         needs_reply = True
         status = "working on it"
     merge = {"state": detail.get("state", "none"), "merged": bool(detail.get("merged"))}
@@ -1729,18 +1731,19 @@ def _build_reviews():
         my_verdict = my_reviews[-1]["state"] if my_reviews else None
         pending_login = {(rr.get("login") or "") for rr in detail["reviewRequests"] if rr.get("__typename") == "User"}
         state = "MERGED" if detail["merged"] else detail["state"]
-        pending_review = login in pending_login
         # the author replied to a thread you left and it's still unresolved — that's back in
         # your court even if nobody formally re-requested your review, same signal the
         # tracker uses to flip a PR back to "working on it".
         needs_reply = state == "OPEN" and _gh_pr_has_unanswered_thread(url, login)
-        if needs_reply:
-            pending_review = True
-        # you blocked the PR and it's still open, and nobody's re-requested you yet — the
-        # ball is in the author's court, not yours. Distinct from "approved"/"commented" PRs,
-        # which need no further action from anyone, and from "pendingReview" ones re-requested
-        # after you'd already left a review (those show as awaiting-you instead).
-        awaiting_author = state == "OPEN" and my_verdict == "CHANGES_REQUESTED" and not pending_review
+        # GitHub only clears you from reviewRequests on an Approve/Request-changes verdict —
+        # a Comment-only review (the common case for "just replying to threads") leaves you
+        # listed as requested forever, even after you've replied to everything. Trust that
+        # stale flag only before your first review; once you've reviewed at least once, the
+        # thread-based signal (needs_reply) is what actually reflects whose turn it is.
+        pending_review = (login in pending_login) if my_verdict is None else needs_reply
+        # you've reviewed at least once, the PR's still open, and nothing you left is
+        # unanswered — the ball is in the author's court, not yours.
+        awaiting_author = state == "OPEN" and my_verdict is not None and not pending_review
         cards.append({
             "url": url, "number": pr.get("number"), "title": pr.get("title", ""),
             "repo": (pr.get("repository") or {}).get("name", ""),
