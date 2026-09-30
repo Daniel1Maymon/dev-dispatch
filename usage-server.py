@@ -1537,16 +1537,19 @@ def _repo_view(r, pr_status, pr_comments):
     manually-set value only when GitHub has no opinion (no PR yet, or one closed unmerged).
 
     On top of that: if the pill would otherwise read "waiting for review"/"waiting for
-    re-review" but a reviewer left a comment thread you (the PR author) haven't replied to
-    yet, override to "working on it" — that's the exact manual check this replaces (open the
-    PR, look for an unanswered conversation, flip the status back yourself)."""
+    re-review"/"ready to merge" but a reviewer left a comment thread you (the PR author)
+    haven't replied to yet, override to "working on it" — that's the exact manual check this
+    replaces (open the PR, look for an unanswered conversation, flip the status back
+    yourself). "ready to merge" is included because GitHub lets a reviewer submit an
+    APPROVED review that also carries fresh line comments ("approving with nits") — the
+    review state alone doesn't mean nothing is outstanding."""
     pr_url = r.get("prUrl")
     login = _gh_login()
     detail = _gh_pr_review_detail(pr_url) if pr_url else {"state": "none", "merged": False}
     status = _classify_pr_status(detail, login) or pr_status.get(pr_url, "")
     needs_reply = False
     if (pr_url and detail.get("state") == "OPEN"
-            and status in ("waiting for review", "waiting for re-review", "")
+            and status in ("waiting for review", "waiting for re-review", "ready to merge", "")
             and _gh_pr_has_unanswered_thread(pr_url, login)):
         needs_reply = True
         status = "working on it"
@@ -1639,32 +1642,49 @@ def _gh_pr_review_detail(pr_url):
 
 
 _PR_URL_EXACT_RE = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/(\d+)$")
-_GH_THREADS_CACHE = {}  # prUrl -> {"data": bool, "at": epoch}
+_GH_THREADS_CACHE = {}  # (prUrl, authorLogin) -> {"data": bool, "at": epoch}
 _REVIEW_THREADS_QUERY = """
 query($owner:String!, $name:String!, $number:Int!) {
   repository(owner:$owner, name:$name) {
     pullRequest(number:$number) {
       reviewThreads(first:100) {
-        nodes { isResolved comments(last:1) { nodes { author { login __typename } } } }
+        nodes { isResolved comments(last:1) { nodes { createdAt author { login __typename } } } }
       }
     }
   }
 }"""
 
 
-def _gh_pr_has_unanswered_thread(pr_url, login):
-    """True if pr_url has a review conversation thread that's unresolved AND whose latest
-    comment isn't from `login` — i.e. a human reviewer left a comment there that `login`
-    hasn't replied to yet. Threads last-commented by a bot (Copilot's auto-review, etc. —
+def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None):
+    """True if pr_url has an unresolved review thread whose latest comment is one `login`
+    still owes an answer to. Threads last-commented by a bot (Copilot's auto-review, etc. —
     GraphQL reports these with author __typename "Bot") never count: an unanswered Copilot
-    comment shouldn't flip the status back to "working on it". `gh pr view --json` has no
-    reviewThreads field, so this goes straight to GitHub's GraphQL API. Cached like
-    _gh_pr_review_detail; never raises — a failed check reads as "nothing pending" rather
-    than blanking the page."""
+    comment shouldn't flip the status back to "working on it".
+
+    Which comment counts depends on whose PR it is, so the caller says:
+
+    * `author_login` omitted — your own PR. Any non-bot comment that isn't yours puts the
+      ball back on you, because on your PR everyone else in a thread is a reviewer.
+    * `author_login` given — someone else's PR (the Reviews page). Only that login speaking
+      last counts. A *third* reviewer commenting last is talking to the author, not to you,
+      so the ball is on the author and this must stay False — otherwise their review round
+      shows up on your page as "the author replied, take another look" when the author has
+      said nothing.
+
+    `since` (ISO timestamp, Reviews page only) — your latest review on the PR. An author reply
+    older than that review doesn't count: you already reviewed after reading it, so your
+    review handed the ball back to the author.
+
+    `gh pr view --json` has no reviewThreads field, so this goes straight to GitHub's
+    GraphQL API. Cached like _gh_pr_review_detail; never raises — a failed check reads as
+    "nothing pending" rather than blanking the page."""
     if not pr_url or not login:
         return False
     now = time.time()
-    hit = _GH_THREADS_CACHE.get(pr_url)
+    # the answer depends on author_login and since, so both are part of the key — the same PR
+    # asked about from the tracker and from the Reviews page are two different questions.
+    cache_key = (pr_url, author_login, since)
+    hit = _GH_THREADS_CACHE.get(cache_key)
     if hit and now - hit["at"] < GH_CACHE_TTL:
         return hit["data"]
     m = _PR_URL_EXACT_RE.match(pr_url)
@@ -1687,13 +1707,22 @@ def _gh_pr_has_unanswered_thread(pr_url, login):
             def _needs_reply(n):
                 if n.get("isResolved"):
                     return False
-                author = (((n.get("comments") or {}).get("nodes") or [{}])[-1].get("author")) or {}
-                return author.get("__typename") != "Bot" and author.get("login") != login
+                last_comment = ((n.get("comments") or {}).get("nodes") or [{}])[-1]
+                author = last_comment.get("author") or {}
+                if author.get("__typename") == "Bot":
+                    return False
+                last = author.get("login")
+                if author_login is not None:
+                    # both are GitHub's ISO-8601 "...Z" strings, so string order is time order
+                    if since and (last_comment.get("createdAt") or "") <= since:
+                        return False
+                    return last == author_login
+                return last != login
 
             data = any(_needs_reply(n) for n in nodes)
     except Exception:
         data = False
-    _GH_THREADS_CACHE[pr_url] = {"data": data, "at": now}
+    _GH_THREADS_CACHE[cache_key] = {"data": data, "at": now}
     return data
 
 
@@ -1731,10 +1760,18 @@ def _build_reviews():
         my_verdict = my_reviews[-1]["state"] if my_reviews else None
         pending_login = {(rr.get("login") or "") for rr in detail["reviewRequests"] if rr.get("__typename") == "User"}
         state = "MERGED" if detail["merged"] else detail["state"]
-        # the author replied to a thread you left and it's still unresolved — that's back in
-        # your court even if nobody formally re-requested your review, same signal the
-        # tracker uses to flip a PR back to "working on it".
-        needs_reply = state == "OPEN" and _gh_pr_has_unanswered_thread(url, login)
+        # the PR's author replied on an unresolved thread — that's back in your court even if
+        # nobody formally re-requested your review, same signal the tracker uses to flip a PR
+        # back to "working on it". Only the author counts: a second reviewer commenting last
+        # is talking to the author, so the ball stays on the author's side, not yours.
+        # `or None` on purpose: if the search payload ever omits the author, fall back to the
+        # old "anyone but me" test rather than comparing against "" — which would match nobody
+        # and silently park the PR under "waiting on the author" forever.
+        pr_author = (pr.get("author") or {}).get("login") or None
+        # your latest review counts as your answer to every author reply that came before it
+        my_last_review_at = my_reviews[-1].get("submittedAt") if my_reviews else None
+        needs_reply = state == "OPEN" and _gh_pr_has_unanswered_thread(
+            url, login, author_login=pr_author, since=my_last_review_at)
         # GitHub only clears you from reviewRequests on an Approve/Request-changes verdict —
         # a Comment-only review (the common case for "just replying to threads") leaves you
         # listed as requested forever, even after you've replied to everything. Trust that
@@ -2175,12 +2212,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if _CLICKUP_REFRESH_LOCK.locked():
                 return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
             _GH_PR_DETAIL_CACHE.clear()
+            _GH_THREADS_CACHE.clear()
             threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/reviews/refresh"):
             # drop cached search results + per-PR detail so the next GET refetches live
             _REVIEWS_CACHE.update(at=0, data=None)
             _GH_PR_DETAIL_CACHE.clear()
+            _GH_THREADS_CACHE.clear()
             return self._json({"ok": True})
         if self.path.startswith("/api/recap/refresh"):
             # force a regeneration of recaps for changed sessions, off-thread

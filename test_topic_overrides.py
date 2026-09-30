@@ -4,14 +4,13 @@
 Runs against a throwaway STATE_DIR so it never touches your real state/.
 Usage:  python3 test_topic_overrides.py
 """
+import importlib.util
 import os
 import tempfile
 
 # point the server at a temp state dir BEFORE importing it
 _TMP = tempfile.mkdtemp(prefix="dispatch-test-")
 os.environ["DISPATCH_STATE_DIR"] = _TMP
-
-import importlib.util
 
 spec = importlib.util.spec_from_file_location(
     "usage_server", os.path.join(os.path.dirname(os.path.abspath(__file__)), "usage-server.py"))
