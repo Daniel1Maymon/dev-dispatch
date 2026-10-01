@@ -302,6 +302,7 @@
       : `<div class="empty">No review history found.</div>`;
 
     $("sub").firstChild.nodeValue = "last synced " + ago(d.fetchedAt);
+    $("sub").dataset.fetchedAt = d.fetchedAt || "";
     paintFlashes();
 
     const warn = $("warnbar");
@@ -309,19 +310,45 @@
     else warn.style.display = "none";
   }
 
+  // The server answers from its cache, so this is normally instant. Only the first request
+  // after a server start waits for a full build (~20s); past LOAD_TIMEOUT_MS something is
+  // wrong, so say so instead of leaving "Fetching…" up forever. Returns the payload, or null.
+  const LOAD_TIMEOUT_MS = 45000;
   async function loadReviews(){
     let d;
-    try { d = await (await fetch("/api/reviews", {cache:"no-store"})).json(); }
-    catch(e){ $("sub").firstChild.nodeValue = "couldn't reach the server"; return; }
-    renderBoard(d);
+    try {
+      const r = await fetch("/api/reviews", {cache:"no-store", signal: AbortSignal.timeout(LOAD_TIMEOUT_MS)});
+      d = await r.json();
+    } catch(e){
+      $("sub").firstChild.nodeValue = e.name === "TimeoutError"
+        ? "server is slow to answer — retrying on the next poll"
+        : "couldn't reach the server";
+      return null;
+    }
+    try { renderBoard(d); }
+    catch(e){
+      const warn = $("warnbar");
+      warn.style.display = "block";
+      warn.innerHTML = `Couldn't draw the board: <b>${esc(String(e && e.message || e))}</b>`;
+    }
+    return d;
   }
 
+  // The refresh click starts a rebuild on the server and returns at once; the board keeps
+  // showing the previous build until one with a newer fetchedAt comes back.
+  const REFRESH_POLL_MS = 2000, REFRESH_MAX_MS = 90000;
   async function refreshNow(){
     const b = $("refreshBtn");
     if (b.disabled) return;
     b.classList.add("spin"); b.disabled = true; b.textContent = "↻ refreshing…";
+    const before = $("sub").dataset.fetchedAt || "";
     try { await fetch("/api/reviews/refresh", {method:"POST"}); } catch(e){}
-    await loadReviews();
+    const giveUpAt = Date.now() + REFRESH_MAX_MS;
+    while (Date.now() < giveUpAt) {
+      await new Promise(res => setTimeout(res, REFRESH_POLL_MS));
+      const d = await loadReviews();
+      if (d && d.fetchedAt && d.fetchedAt !== before && !d.refreshing) break;
+    }
     b.classList.remove("spin"); b.textContent = "↻ refresh"; b.disabled = false;
   }
   $("refreshBtn").addEventListener("click", refreshNow);

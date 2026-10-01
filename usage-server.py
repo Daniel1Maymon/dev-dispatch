@@ -71,7 +71,7 @@ RECAP_PATH = os.path.join(STATE_DIR, "recaps.json")
 RECAP_MODEL = "claude-haiku-4-5"
 RECAP_INTERVAL = int(os.environ.get("RECAP_INTERVAL", "300"))  # worker loop, seconds
 RECAP_CONCURRENCY = int(os.environ.get("RECAP_CONCURRENCY", "3"))
-# Set to skip both background workers entirely — useful for running the server just to
+# Set to skip all background workers entirely — useful for running the server just to
 # serve the dashboard + answer on-demand refresh clicks, without the 5/10-min auto-polling
 # `claude -p` calls running (and burning tokens) the whole time it's up.
 DISABLE_WORKERS = os.environ.get("DISABLE_WORKERS", "").lower() in ("1", "true", "yes")
@@ -129,11 +129,16 @@ GITHUB_ORG = "tenjin-data-enhancement"
 _ORG_REPOS_CACHE = {"at": 0, "repos": []}
 
 # ---------- PR reviews: PRs you were asked to review (or already reviewed) ----------
-# No state file — this is entirely live `gh search`/`gh pr view` data, refetched on a short
-# cache like the rest of the dashboard. `--owner` scopes the search to GITHUB_ORG, same as
-# the feature tracker's auto-PR-detection.
+# No state file — this is entirely live `gh search`/`gh pr view` data. A cold build makes
+# one gh call per PR in sequence and takes ~20s, so the page never waits on it: a background
+# worker rebuilds _REVIEWS_CACHE every REVIEWS_INTERVAL seconds and GET /api/reviews answers
+# from whatever is there. `--owner` scopes the search to GITHUB_ORG, same as the feature
+# tracker's auto-PR-detection.
 _REVIEWS_CACHE = {"at": 0, "data": None}
-REVIEWS_CACHE_TTL = 60  # seconds
+REVIEWS_CACHE_TTL = 60  # seconds — older than this, a GET also kicks a background rebuild
+REVIEWS_INTERVAL = int(os.environ.get("REVIEWS_INTERVAL", "60"))  # worker loop, seconds
+# One rebuild at a time — the worker, a refresh click and a stale GET can all ask for one.
+_REVIEWS_REFRESH_LOCK = threading.Lock()
 _GH_LOGIN_CACHE = {"at": 0, "login": None}
 GH_LOGIN_TTL = 3600  # seconds — your own username doesn't change mid-session
 _GH_PR_DETAIL_CACHE = {}  # prUrl -> {"data": {...}, "at": epoch}
@@ -1729,11 +1734,9 @@ def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None):
 def _build_reviews():
     """PRs you were asked to review (pending) or have already reviewed, across GITHUB_ORG.
     Two `gh search prs` calls find the candidate PRs; `gh pr view` (cached) fills in your
-    actual review verdict on each, since search doesn't expose that."""
+    actual review verdict on each, since search doesn't expose that. Always fetches live and
+    stores the result in _REVIEWS_CACHE — call it through _reviews_refresh_guarded()."""
     now = time.time()
-    if _REVIEWS_CACHE["data"] and now - _REVIEWS_CACHE["at"] < REVIEWS_CACHE_TTL:
-        return _REVIEWS_CACHE["data"]
-
     login = _gh_login()
     if not login:
         data = {"cards": [], "fetchedAt": None, "error": "could not resolve your GitHub login (gh auth status?)"}
@@ -1802,6 +1805,44 @@ def _build_reviews():
     data = {"cards": cards, "fetchedAt": datetime.datetime.now(datetime.timezone.utc).isoformat(), "error": None}
     _REVIEWS_CACHE.update(at=now, data=data)
     return data
+
+
+def _reviews_refresh_guarded():
+    """Run _build_reviews() unless a rebuild is already in progress, in which case skip and
+    return None rather than stacking a second run of the same ~20s of gh calls."""
+    if not _REVIEWS_REFRESH_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return _build_reviews()
+    finally:
+        _REVIEWS_REFRESH_LOCK.release()
+
+
+def _get_reviews():
+    """What GET /api/reviews serves: the cached build, right away. Only the very first request
+    after a server start has nothing to show, so that one waits for a build. A cache older than
+    REVIEWS_CACHE_TTL kicks a background rebuild — a backstop for DISABLE_WORKERS or a dead
+    worker — and is still served as-is. `refreshing` tells the page a newer build is on the way."""
+    data = _REVIEWS_CACHE["data"]
+    if data is None:
+        if _reviews_refresh_guarded() is None:
+            # a rebuild was already running — wait for it to finish, then serve its result
+            with _REVIEWS_REFRESH_LOCK:
+                pass
+        data = _REVIEWS_CACHE["data"] or {"cards": [], "fetchedAt": None, "error": "reviews build failed"}
+    elif time.time() - _REVIEWS_CACHE["at"] >= REVIEWS_CACHE_TTL and not _REVIEWS_REFRESH_LOCK.locked():
+        threading.Thread(target=_reviews_refresh_guarded, daemon=True).start()
+    return {**data, "refreshing": _REVIEWS_REFRESH_LOCK.locked()}
+
+
+def _reviews_worker():
+    """Background daemon: rebuild the PR Reviews cache every REVIEWS_INTERVAL seconds."""
+    while True:
+        try:
+            _reviews_refresh_guarded()
+        except Exception as e:
+            print(f"[reviews] worker error: {e}")
+        time.sleep(REVIEWS_INTERVAL)
 
 
 def _recap_worker():
@@ -2216,11 +2257,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/reviews/refresh"):
-            # drop cached search results + per-PR detail so the next GET refetches live
-            _REVIEWS_CACHE.update(at=0, data=None)
+            # drop per-PR detail so the rebuild refetches live, and rebuild off-thread — the
+            # old board keeps being served until the new one lands (the page polls fetchedAt)
             _GH_PR_DETAIL_CACHE.clear()
             _GH_THREADS_CACHE.clear()
-            return self._json({"ok": True})
+            if _REVIEWS_REFRESH_LOCK.locked():
+                return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
+            threading.Thread(target=_reviews_refresh_guarded, daemon=True).start()
+            return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/recap/refresh"):
             # force a regeneration of recaps for changed sessions, off-thread
             if _RECAP_REFRESH_LOCK.locked():
@@ -2345,7 +2389,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/reviews"):
             try:
-                self._json(_build_reviews())
+                self._json(_get_reviews())
             except Exception as e:
                 self._json({"error": str(e)}, 502)
             return
@@ -2391,6 +2435,8 @@ if __name__ == "__main__":
         threading.Thread(target=_recap_worker, daemon=True).start()
         # background feature-tracker worker — refreshes the ClickUp task snapshot
         threading.Thread(target=_clickup_worker, daemon=True).start()
+        # background PR Reviews worker — keeps /api/reviews warm so the page never waits on gh
+        threading.Thread(target=_reviews_worker, daemon=True).start()
     # Threaded server: one slow/blocked request (e.g. a hung osascript or usage fetch)
     # must never freeze the whole dashboard. daemon_threads so it shuts down cleanly.
     http.server.ThreadingHTTPServer.allow_reuse_address = True
@@ -2402,4 +2448,5 @@ if __name__ == "__main__":
         else:
             print(f"[recaps] worker on, every {RECAP_INTERVAL}s via {RECAP_MODEL}")
             print(f"[clickup] worker on, every {CLICKUP_INTERVAL}s via the ClickUp REST API")
+            print(f"[reviews] worker on, every {REVIEWS_INTERVAL}s via gh")
         httpd.serve_forever()
