@@ -52,6 +52,9 @@
     display:flex; justify-content:space-between; align-items:flex-end;
   }
   .board-h .n { color:var(--ink-faint); letter-spacing:.1em; }
+  .board-h .right { display:flex; gap:12px; align-items:baseline; }
+  .merged-toggle { font-family:var(--mono); font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); background:none; border:1px solid var(--rule); padding:3px 8px; cursor:pointer; }
+  .merged-toggle:hover { color:var(--accent-deep); border-color:var(--accent-deep); }
 
   .subject {
     background:var(--paper-card); border:1px solid var(--rule); border-left:4px solid var(--ink-faint);
@@ -217,8 +220,11 @@
   .wp-item:first-child { border-top:none; }
   .wp-item a { font-family:var(--mono); font-size:12px; color:var(--ink); text-decoration:none; display:block; }
   .wp-item a:hover { color:var(--accent-deep); }
-  .wp-item.wp-shared { border-left:2px solid var(--gold); background:rgba(194,144,47,.1); padding-left:8px; margin-left:-10px; }
   .wp-item.wp-shared > a { color:var(--accent-deep); }
+  /* per-ticket color: a 4px stripe on the left (split in two for a PR shared by two
+     tickets) over a pale tint. --stripe/--tint are set inline per entry. */
+  .wp-item.tk { background:var(--stripe) left / 4px 100% no-repeat, var(--tint); border-radius:4px; padding:8px 8px 8px 12px; margin:4px -8px 0; border-top-color:transparent; }
+  .wp-item.tk:first-child { margin-top:0; }
   /* rail entry for a PR whose status just moved - same ALERT_MS window as its repo row.
      .wp-item has no horizontal padding, so the tint needs its own (pulled back out with a
      negative margin) or it runs flush against the text. Declared after .wp-shared on
@@ -299,7 +305,7 @@
 
     <div class="warnbar" id="warnbar" style="display:none"></div>
 
-    <div class="board-h">In flight <span class="n" id="boardN"></span></div>
+    <div class="board-h">In flight <span class="right"><button class="merged-toggle" id="mergedToggle" style="display:none"></button><span class="n" id="boardN"></span></span></div>
     <div id="board"><div class="empty">Fetching your ClickUp board…</div></div>
 
     <a class="everything" href="/focus.html">▾ where am I right now — session-level view</a>
@@ -409,11 +415,11 @@
   const REVIEW_STATUSES = ["waiting for review", "waiting for re-review"];
   let LAST_DATA = null;
 
-  function renderStatusPanel(d, countId, listId, statuses){
+  function renderStatusPanel(d, countId, listId, statuses, hues = {}){
     const items = [];
     for (const c of (d.cards || [])) {
       for (const r of (c.repos || [])) {
-        if (statuses.includes(r.status)) items.push({card: c, repo: r});
+        if (statuses.includes(railStatus(r))) items.push({card: c, repo: r});
       }
     }
 
@@ -444,12 +450,39 @@
           // one rail entry can stand for the same PR linked from several tasks, so it
           // carries every (task, repo) key it covers - it lights if any of them just moved.
           const keys = g.map(({card, repo: itemRepo}) => `${card.taskId}:${itemRepo.id}`);
-          return `<div class="wp-item${shared ? " wp-shared" : ""}${keys.some(k => flashing(k)) ? " status-changed" : ""}" data-keys="${esc(keys.join("|"))}">
+          return `<div class="wp-item${shared ? " wp-shared" : ""}${ticketStyle(g, hues) ? " tk" : ""}${keys.some(k => flashing(k)) ? " status-changed" : ""}" data-keys="${esc(keys.join("|"))}"${ticketStyle(g, hues)}>
             <a href="${esc(repo.prUrl || card.url)}" target="_blank" rel="noopener">${esc(repo.repo || "(unnamed repo)")}${repo.prUrl ? " " + esc(prNumber(repo.prUrl)) : ""}</a>
             <div class="wp-task">${taskLinks}</div>
           </div>`;
         }).join("")
       : `<div class="wp-empty">nothing yet</div>`;
+  }
+
+  // the status a PR row files under in the side rails: the dropdown when it's set, else an
+  // open PR with no status yet (e.g. one auto-added from the ClickUp description) counts
+  // as still being worked on
+  function railStatus(r){
+    if (r.status) return r.status;
+    return (r.mergeStatus || {}).state === "OPEN" ? "working on it" : "";
+  }
+
+  // One hue per ticket on screen, spread evenly around the color wheel, so every ticket
+  // gets a different color however many there are. Sorted by id so the order is stable;
+  // a ticket's hue still shifts when tickets are added or removed.
+  function ticketHues(taskIds){
+    const ids = [...new Set(taskIds)].sort();
+    const hues = {};
+    ids.forEach((id, i) => { hues[id] = Math.round(i * 360 / ids.length); });
+    return hues;
+  }
+
+  // inline style for a rail entry: stripe split into one band per ticket, tint from the first
+  function ticketStyle(g, hues){
+    const hs = [...new Set(g.map(({card}) => hues[card.taskId]))].filter(h => h !== undefined);
+    if (!hs.length) return "";
+    const step = 100 / hs.length;
+    const bands = hs.map((h, i) => `hsl(${h} 60% 45%) ${i * step}% ${(i + 1) * step}%`).join(", ");
+    return ` style="--stripe:linear-gradient(to bottom, ${bands}); --tint:hsl(${hs[0]} 70% 92%)"`;
   }
 
   function flash(el){
@@ -476,8 +509,13 @@
   });
 
   function renderSidePanels(d){
-    renderStatusPanel(d, "wpN", "wpList", WORKING_STATUSES);
-    renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES);
+    // hues are computed over BOTH rails together so a ticket has the same color in each
+    const railStatuses = WORKING_STATUSES.concat(REVIEW_STATUSES);
+    const hues = ticketHues((d.cards || [])
+      .filter(c => (c.repos || []).some(r => railStatuses.includes(railStatus(r))))
+      .map(c => c.taskId));
+    renderStatusPanel(d, "wpN", "wpList", WORKING_STATUSES, hues);
+    renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES, hues);
   }
 
   function ago(iso){
@@ -667,10 +705,17 @@
     LAST_DATA = d;
     noteChanges(d.cards || []);
     PR_STATUS_OPTIONS = d.prStatusOptions || [];
-    const cards = d.cards || [];
-    $("boardN").textContent = cards.length ? `${cards.length} task${cards.length===1?"":"s"}` : "";
+    const allCards = d.cards || [];
+    const mergedN = allCards.filter(allMerged).length;
+    const cards = showMerged ? allCards : allCards.filter(c => !allMerged(c));
+    const toggle = $("mergedToggle");
+    toggle.style.display = mergedN ? "" : "none";
+    toggle.textContent = `${showMerged ? "hide" : "show"} merged (${mergedN})`;
+    $("boardN").textContent = (cards.length ? `${cards.length} task${cards.length===1?"":"s"}` : "")
+      + (!showMerged && mergedN ? ` · ${mergedN} merged hidden` : "");
     $("board").innerHTML = cards.length
       ? cards.map(renderCard).join("")
+      : mergedN ? `<div class="empty">Every ticket here has only merged PRs — press "show merged" to see them.</div>`
       : `<div class="empty">Nothing in progress / review / testing / waiting-for-deployment right now.</div>`;
     renderSidePanels(d);
 
@@ -692,6 +737,23 @@
     if (d.error && !(d.cards||[]).length) { $("board").innerHTML = `<div class="empty">${esc(d.error)}</div>`; }
     renderBoard(d);
   }
+
+  // a ticket is done when it has PRs and every one of them is merged; those are hidden by
+  // default behind the "show merged" button. A ticket with no PRs yet is not done.
+  const SHOW_MERGED_KEY = "dd.tracker.showMerged";
+  let showMerged = false;
+  try { showMerged = localStorage.getItem(SHOW_MERGED_KEY) === "1"; } catch(e){}
+
+  function allMerged(c){
+    const repos = c.repos || [];
+    return repos.length > 0 && repos.every(r => (r.mergeStatus || {}).merged);
+  }
+
+  $("mergedToggle").addEventListener("click", () => {
+    showMerged = !showMerged;
+    try { localStorage.setItem(SHOW_MERGED_KEY, showMerged ? "1" : "0"); } catch(e){}
+    if (LAST_DATA) renderBoard(LAST_DATA);
+  });
 
   $("board").addEventListener("click", async e => {
     const t = e.target.closest(".togglebtn");
