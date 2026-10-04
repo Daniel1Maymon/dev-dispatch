@@ -7,6 +7,21 @@ into topics you can resume or close straight from the browser (in iTerm).
 > Built for macOS + iTerm2 + Claude Code. The live-usage and resume-in-terminal
 > features rely on those specifically.
 
+## Screenshots
+
+Ticket names, repos, PR titles and authors are blurred.
+
+**Feature tracker** (`tracker.html`): your in-flight ClickUp tickets with their PRs. The side
+rails list PRs you're working on and PRs waiting for review, one color per ticket. Tickets
+whose PRs are all merged are hidden behind "show merged".
+
+![Feature tracker](docs/screenshots/tracker.png)
+
+**PR reviews** (`reviews.html`): PRs where you're a reviewer, split into "waiting on you" and
+"waiting on the author".
+
+![PR reviews](docs/screenshots/reviews.png)
+
 ## Run
 
 ```bash
