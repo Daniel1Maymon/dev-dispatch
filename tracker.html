@@ -216,6 +216,13 @@
     display:flex; justify-content:space-between; align-items:baseline;
   }
   .wp-head .n { color:var(--ink-faint); letter-spacing:.1em; }
+  .rail-sort { font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-faint); margin:-4px 0 8px; display:flex; gap:4px; align-items:center; }
+  .rail-sort button { font:inherit; letter-spacing:inherit; text-transform:inherit; color:var(--ink-soft); background:none; border:1px solid var(--rule); padding:2px 7px; cursor:pointer; }
+  .rail-sort button:hover { color:var(--accent-deep); border-color:var(--accent-deep); }
+  .rail-sort button.on { color:var(--paper); background:var(--ink); border-color:var(--ink); }
+  .wp-head .wp-right { display:flex; gap:8px; align-items:baseline; flex-shrink:0; }
+  .copy-links { font-family:var(--mono); font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); background:none; border:1px solid var(--rule); padding:2px 7px; cursor:pointer; }
+  .copy-links:hover { color:var(--accent-deep); border-color:var(--accent-deep); }
   .wp-item { padding:8px 0; border-top:1px dotted var(--rule); }
   .wp-item:first-child { border-top:none; }
   .wp-item a { font-family:var(--mono); font-size:12px; color:var(--ink); text-decoration:none; display:block; }
@@ -234,6 +241,10 @@
   .wp-task a { font-family:var(--mono); font-size:10.5px; color:var(--ink-faint); display:inline; cursor:pointer; }
   .wp-task a:hover { color:var(--accent-deep); }
   .wp-task .sep { color:var(--ink-faint); }
+  .wp-rev { font-family:var(--mono); font-size:10.5px; color:var(--ink-soft); margin-top:4px; }
+  .wp-rev .lab { color:var(--ink-faint); }
+  .wp-rev .none { color:var(--ink-faint); font-style:italic; }
+  .wp-rev + .wp-rev { margin-top:1px; }
 
   .subject.focus-flash { animation:focusFlash 1.6s ease; }
   @keyframes focusFlash {
@@ -258,11 +269,13 @@
 </head>
 <body>
   <div class="side-panel working-panel" id="workingPanel">
-    <div class="wp-head"><span>🔧 Working On It & Blocked</span><span class="n" id="wpN"></span></div>
+    <div class="wp-head"><span>🔧 Working On It & Blocked</span><span class="wp-right"><button class="copy-links" data-list="wpList" title="copy every PR link in this list, in the order shown">copy</button><span class="n" id="wpN"></span></span></div>
+    <div class="rail-sort" data-rail="wp">sort <button data-sort="groups" title="one ticket's PRs together, tickets in board order">groups</button><button data-sort="date-desc" title="newest activity first (the later of the last code update and the last review)">newest</button><button data-sort="date-asc" title="oldest activity first (the later of the last code update and the last review)">oldest</button></div>
     <div id="wpList"><div class="wp-empty">nothing yet</div></div>
   </div>
   <div class="side-panel review-panel" id="reviewPanel">
-    <div class="wp-head"><span>👀 Waiting for Review</span><span class="n" id="rvN"></span></div>
+    <div class="wp-head"><span>👀 Waiting for Review</span><span class="wp-right"><button class="copy-links" data-list="rvList" title="copy every PR link in this list, in the order shown">copy</button><span class="n" id="rvN"></span></span></div>
+    <div class="rail-sort" data-rail="rv">sort <button data-sort="groups" title="one ticket's PRs together, tickets in board order">groups</button><button data-sort="date-desc" title="newest activity first (the later of the last code update and the last review)">newest</button><button data-sort="date-asc" title="oldest activity first (the later of the last code update and the last review)">oldest</button></div>
     <div id="rvList"><div class="wp-empty">nothing yet</div></div>
   </div>
   <div class="wrap">
@@ -415,7 +428,7 @@
   const REVIEW_STATUSES = ["waiting for review", "waiting for re-review"];
   let LAST_DATA = null;
 
-  function renderStatusPanel(d, countId, listId, statuses, hues = {}){
+  function renderStatusPanel(d, countId, listId, statuses, hues = {}, sort = "groups"){
     const items = [];
     for (const c of (d.cards || [])) {
       for (const r of (c.repos || [])) {
@@ -439,6 +452,20 @@
       }
     }
 
+    // "date-desc" / "date-asc": newest / oldest activity first, where activity is the later of
+    // the last code update and the last review on any PR in the entry. Entries with neither go
+    // last either way; ties keep the groups order (Array.sort is stable).
+    if (sort === "date-desc" || sort === "date-asc") {
+      const lastActivity = g => g.reduce((m, {repo}) =>
+        [repo.lastCommitAt || "", repo.lastReviewAt || "", m].sort().pop(), "");
+      const dir = sort === "date-asc" ? 1 : -1;
+      groups.sort((a, b) => {
+        const x = lastActivity(a), y = lastActivity(b);
+        if (!x || !y) return (!x) - (!y);
+        return dir * x.localeCompare(y);
+      });
+    }
+
     $(countId).textContent = groups.length ? String(groups.length) : "";
     $(listId).innerHTML = groups.length
       ? groups.map(g => {
@@ -453,9 +480,51 @@
           return `<div class="wp-item${shared ? " wp-shared" : ""}${ticketStyle(g, hues) ? " tk" : ""}${keys.some(k => flashing(k)) ? " status-changed" : ""}" data-keys="${esc(keys.join("|"))}"${ticketStyle(g, hues)}>
             <a href="${esc(repo.prUrl || card.url)}" target="_blank" rel="noopener">${esc(repo.repo || "(unnamed repo)")}${repo.prUrl ? " " + esc(prNumber(repo.prUrl)) : ""}</a>
             <div class="wp-task">${taskLinks}</div>
+            ${reviewersLine(repo)}
+            ${timesLines(repo)}
           </div>`;
         }).join("")
       : `<div class="wp-empty">nothing yet</div>`;
+  }
+
+  // "review by Barak ⏳ · Copilot 💬" under a rail entry: each reviewer with their latest
+  // verdict, from the PR's GitHub reviews and pending review requests
+  const REVIEW_MARK = {
+    APPROVED: ["✅", "approved"], CHANGES_REQUESTED: ["❗", "requested changes"],
+    COMMENTED: ["💬", "commented"], REQUESTED: ["⏳", "review requested, not done yet"],
+    DISMISSED: ["⊘", "review dismissed"],
+  };
+  function reviewersLine(repo){
+    if (!repo.prUrl) return "";
+    const revs = repo.reviewers || [];
+    if (!revs.length) return `<div class="wp-rev"><span class="lab">review by</span> <span class="none">nobody yet</span></div>`;
+    const names = revs.map(rv => {
+      const [mark, label] = REVIEW_MARK[rv.state] || ["", (rv.state || "").toLowerCase()];
+      return `<span title="${esc(rv.login)}: ${esc(label)}">${esc(rv.name)}${mark ? " " + mark : ""}</span>`;
+    }).join(`<span class="sep"> · </span>`);
+    return `<div class="wp-rev"><span class="lab">review by</span> ${names}</div>`;
+  }
+
+  // "PR opened" / "code updated 3h ago" / "last review Oct 1, 14:05 (3 days ago)" under a rail entry:
+  // under a day old reads as "Nh ago"; older shows the date with the age in parentheses
+  function sinceStamp(iso){
+    if (!iso) return "";
+    const t = new Date(iso), days = Math.floor((Date.now() - t.getTime()) / 86400000);
+    if (days < 1) return ago(iso);
+    const when = t.toLocaleString("en-US", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false });
+    return `${when} (${days === 1 ? "1 day" : days + " days"} ago)`;
+  }
+  function timesLines(repo){
+    if (!repo.prUrl) return "";
+    const opened = repo.createdAt
+      ? `<span title="${esc(repo.createdAt)}">${esc(sinceStamp(repo.createdAt))}</span>` : `<span class="none">unknown</span>`;
+    const code = repo.lastCommitAt
+      ? `<span title="${esc(repo.lastCommitAt)}">${esc(sinceStamp(repo.lastCommitAt))}</span>` : `<span class="none">unknown</span>`;
+    const review = repo.lastReviewAt
+      ? `<span title="${esc(repo.lastReviewAt)}">${esc(sinceStamp(repo.lastReviewAt))}</span>` : `<span class="none">none yet</span>`;
+    return `<div class="wp-rev"><span class="lab">PR opened</span> ${opened}</div>
+            <div class="wp-rev"><span class="lab">code updated</span> ${code}</div>
+            <div class="wp-rev wp-time"><span class="lab">last review</span> ${review}</div>`;
   }
 
   // the status a PR row files under in the side rails: the dropdown when it's set, else an
@@ -514,8 +583,9 @@
     const hues = ticketHues((d.cards || [])
       .filter(c => (c.repos || []).some(r => railStatuses.includes(railStatus(r))))
       .map(c => c.taskId));
-    renderStatusPanel(d, "wpN", "wpList", WORKING_STATUSES, hues);
-    renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES, hues);
+    renderStatusPanel(d, "wpN", "wpList", WORKING_STATUSES, hues, railSort.wp);
+    renderStatusPanel(d, "rvN", "rvList", REVIEW_STATUSES, hues, railSort.rv);
+    paintRailSort();
   }
 
   function ago(iso){
@@ -755,6 +825,35 @@
     if (LAST_DATA) renderBoard(LAST_DATA);
   });
 
+  // each side panel sorts by "groups" (default), "date-desc" or "date-asc", remembered per panel
+  const RAIL_SORT_KEY = "dd.tracker.railSort";
+  let railSort = { wp: "groups", rv: "groups" };
+  try { railSort = { ...railSort, ...JSON.parse(localStorage.getItem(RAIL_SORT_KEY) || "{}") }; } catch(e){}
+  for (const k in railSort) if (railSort[k] === "date") railSort[k] = "date-desc";  // saved by the first version
+  function paintRailSort(){
+    document.querySelectorAll(".rail-sort").forEach(el => el.querySelectorAll("button").forEach(b =>
+      b.classList.toggle("on", b.dataset.sort === railSort[el.dataset.rail])));
+  }
+  document.querySelectorAll(".rail-sort").forEach(el => el.addEventListener("click", e => {
+    const b = e.target.closest("button[data-sort]");
+    if (!b || railSort[el.dataset.rail] === b.dataset.sort) return;
+    railSort[el.dataset.rail] = b.dataset.sort;
+    try { localStorage.setItem(RAIL_SORT_KEY, JSON.stringify(railSort)); } catch(e){}
+    paintRailSort();
+    loadTracker();  // served from the server's cache, so this is instant
+  }));
+
+  // "copy" button: the PR links in a rail, in the order shown, one per line
+  function copyLinks(btn, list, selector){
+    const links = [...new Set([...list.querySelectorAll(selector)].map(a => a.href).filter(h => h.includes("/pull/")))];
+    const label = btn.textContent;
+    const say = t => { btn.textContent = t; setTimeout(() => { btn.textContent = label; }, 1500); };
+    if (!links.length) return say("no PRs");
+    navigator.clipboard.writeText(links.join("\n")).then(() => say(`copied ${links.length}`), () => say("copy failed"));
+  }
+  document.querySelectorAll(".copy-links").forEach(b => b.addEventListener("click", () =>
+    copyLinks(b, $(b.dataset.list), ".wp-item > a")));
+
   $("board").addEventListener("click", async e => {
     const t = e.target.closest(".togglebtn");
     if (t) {
@@ -834,13 +933,10 @@
     if (b.disabled) return;  // a refresh is already in flight — don't stack another
     b.classList.add("spin"); b.disabled = true;
 
-    let before = null;
-    try { before = JSON.stringify((await (await fetch("/api/tracker", {cache:"no-store"})).json())); } catch(e){}
     try { await fetch("/api/tracker/refresh", {method:"POST"}); } catch(e){}
 
-    // A real fetch is direct ClickUp API calls (task list + per-task description/comments,
-    // fetched concurrently) — usually a few seconds. Poll for the snapshot to actually
-    // change instead of guessing a delay.
+    // A refresh re-pulls ClickUp (a few seconds), then re-asks GitHub about every PR (up to
+    // ~30s). The server says `refreshing` until both are done, so poll until it stops.
     const maxWaitMs = 2 * 60 * 1000, pollMs = 1000, started = Date.now();
     let d = null;
     while (Date.now() - started < maxWaitMs) {
@@ -849,7 +945,7 @@
       await new Promise(r => setTimeout(r, pollMs));
       try { d = await (await fetch("/api/tracker", {cache:"no-store"})).json(); }
       catch(e){ continue; }
-      if (JSON.stringify(d) !== before) break;
+      if (!d.refreshing) break;
     }
     if (d) renderBoard(d);
     b.classList.remove("spin"); b.textContent = "↻ refresh"; b.disabled = false;

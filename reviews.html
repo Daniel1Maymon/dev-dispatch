@@ -52,6 +52,9 @@
     display:flex; justify-content:space-between; align-items:flex-end;
   }
   .board-h .n { color:var(--ink-faint); letter-spacing:.1em; }
+  .board-h .h-right { display:flex; gap:12px; align-items:flex-end; }
+  .copy-links { font:inherit; font-size:10px; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-soft); background:none; border:1px solid var(--rule); padding:2px 7px; cursor:pointer; }
+  .copy-links:hover { color:var(--accent-deep); border-color:var(--accent-deep); }
   .board-h.second { margin-top:34px; }
 
   .card {
@@ -96,6 +99,12 @@
   .pill.state-closed  { color:var(--red); background:rgba(177,71,58,.13); border-color:transparent; }
   .pill.draft { font-style:italic; }
   .updated { font-family:var(--mono); font-size:11px; color:var(--ink-faint); }
+  .facts {
+    display:grid; grid-template-columns:max-content 1fr; gap:3px 12px; margin-top:10px;
+    font-family:var(--mono); font-size:11.5px; color:var(--ink-soft);
+  }
+  .facts .lab { color:var(--ink-faint); }
+  .facts .none { color:var(--ink-faint); font-style:italic; }
 
   .empty { font-family:var(--mono); font-size:13px; color:var(--ink-faint); padding:30px 0; text-align:center; }
   .everything {
@@ -121,18 +130,28 @@
 
     <div class="warnbar" id="warnbar" style="display:none"></div>
 
-    <div class="board-h">Waiting on you <span class="n" id="pendingN"></span></div>
+    <div class="board-h">Waiting on you <span class="h-right"><button class="copy-links" data-list="pendingBoard" title="copy every PR link in this section, in the order shown">copy links</button><span class="n" id="pendingN"></span></span></div>
     <div id="pendingBoard"><div class="empty">Fetching…</div></div>
 
-    <div class="board-h second">Waiting on the author <span class="n" id="authorN"></span></div>
+    <div class="board-h second">Waiting on the author <span class="h-right"><button class="copy-links" data-list="authorBoard" title="copy every PR link in this section, in the order shown">copy links</button><span class="n" id="authorN"></span></span></div>
     <div id="authorBoard"><div class="empty">Fetching…</div></div>
 
-    <div class="board-h second">Already reviewed <span class="n" id="doneN"></span></div>
+    <div class="board-h second">Already reviewed <span class="h-right"><button class="copy-links" data-list="doneBoard" title="copy every PR link in this section, in the order shown">copy links</button><span class="n" id="doneN"></span></span></div>
     <div id="doneBoard"><div class="empty">Fetching…</div></div>
   </div>
 
 <script>
   const $ = id => document.getElementById(id);
+  // "copy links" button: the PR links in a section, in the order shown, one per line
+  function copyLinks(btn, list, selector){
+    const links = [...new Set([...list.querySelectorAll(selector)].map(a => a.href).filter(h => h.includes("/pull/")))];
+    const label = btn.textContent;
+    const say = t => { btn.textContent = t; setTimeout(() => { btn.textContent = label; }, 1500); };
+    if (!links.length) return say("no PRs");
+    navigator.clipboard.writeText(links.join("\n")).then(() => say(`copied ${links.length}`), () => say("copy failed"));
+  }
+  document.querySelectorAll(".copy-links").forEach(b => b.addEventListener("click", () =>
+    copyLinks(b, $(b.dataset.list), ".card-title")));
   const esc = s => (s||"").replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
   function ago(iso){
@@ -189,7 +208,39 @@
         <span class="pill">by ${esc(c.author)}</span>
         <span class="updated">updated ${ago(c.updatedAt)}</span>
       </div>
+      ${factsBlock(c)}
     </div>`;
+  }
+
+  // reviewers with their latest verdict, same marks as the feature tracker's side panels
+  const REVIEW_MARK = {
+    APPROVED: ["✅", "approved"], CHANGES_REQUESTED: ["❗", "requested changes"],
+    COMMENTED: ["💬", "commented"], REQUESTED: ["⏳", "review requested, not done yet"],
+    DISMISSED: ["⊘", "review dismissed"],
+  };
+  // under a day old reads as "3h ago"; older shows the date with the age in parentheses
+  function sinceStamp(iso){
+    const t = new Date(iso), days = Math.floor((Date.now() - t.getTime()) / 86400000);
+    if (days < 1) return ago(iso);
+    const when = t.toLocaleString("en-US", { month:"short", day:"numeric", hour:"2-digit", minute:"2-digit", hour12:false });
+    return `${when} (${days === 1 ? "1 day" : days + " days"} ago)`;
+  }
+  function stamp(iso, missing){
+    return iso ? `<span title="${esc(iso)}">${esc(sinceStamp(iso))}</span>` : `<span class="none">${missing}</span>`;
+  }
+  // "review by / opened / code updated / last review", one row each, inside the card
+  function factsBlock(c){
+    const revs = c.reviewers || [];
+    const names = revs.length ? revs.map(rv => {
+      const [mark, label] = REVIEW_MARK[rv.state] || ["", (rv.state || "").toLowerCase()];
+      return `<span title="${esc(rv.login)}: ${esc(label)}">${esc(rv.name)}${mark ? " " + mark : ""}</span>`;
+    }).join(" · ") : `<span class="none">nobody yet</span>`;
+    return `<div class="facts">
+        <span class="lab">review by</span><span>${names}</span>
+        <span class="lab">opened</span>${stamp(c.createdAt, "unknown")}
+        <span class="lab">code updated</span>${stamp(c.lastCommitAt, "unknown")}
+        <span class="lab">last review</span>${stamp(c.lastReviewAt, "none yet")}
+      </div>`;
   }
 
 

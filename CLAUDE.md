@@ -149,6 +149,7 @@ A topic's archived state is stored with a fingerprint of its sessions (total mes
 | `DISPATCH_ROOT` | `~/MyProjects` | Root folder whose sessions are surfaced |
 | `DISPATCH_STATE_DIR` | `./state/` | Where all state JSON files live |
 | `CLICKUP_API_TOKEN` | unset | Personal ClickUp API token — required for the feature tracker (`_clickup_api`) to fetch tasks/comments directly; without it, ClickUp refreshes fail |
+| `GITHUB_DISPLAY_NAMES` | unset | `login=Name,login=Name` short names for the tracker's "review by" line, for reviewers whose GitHub profile has no name |
 | `RECAP_INTERVAL` | `300` | Seconds between recap worker runs |
 | `RECAP_CONCURRENCY` | `3` | Parallel `claude -p` calls in recap worker |
 | `FOCUS_TOPN` | `3` | Topics shown on the focus board |

@@ -18,8 +18,12 @@ const prNumber = u => "PR #" + u.split("/").pop();
 const LIVE = new Set(["t1:r1"]);
 const flashing = k => LIVE.has(k);
 
-const { render, ticketHues } = new Function("$", "esc", "prNumber", "flashing",
-  src + "; return { render: renderStatusPanel, ticketHues };")($, esc, prNumber, flashing);
+// the page's own "3h ago" helper lives outside the extracted block, so pull it in too
+const agoSrc = html.slice(html.indexOf("function ago(iso)"), html.indexOf("function mergePill("));
+const ago = new Function(agoSrc + "; return ago;")();
+
+const { render, ticketHues } = new Function("$", "esc", "prNumber", "flashing", "ago",
+  src + "; return { render: renderStatusPanel, ticketHues };")($, esc, prNumber, flashing, ago);
 
 const PR_A = "https://github.com/org/repo-a/pull/32";
 const PR_B = "https://github.com/org/repo-b/pull/99";
@@ -104,6 +108,54 @@ render(noStatus, "rvN", "rvL", ["waiting for review", "waiting for re-review"]);
 check("empty status + open PR -> working rail", $("wpL").innerHTML.includes("open-one"), true);
 check("empty status + merged PR -> no rail", $("wpL").innerHTML.includes("merged-one") || $("rvL").innerHTML.includes("merged-one"), false);
 check("a status you set still wins", $("rvL").innerHTML.includes("set-one") && !$("wpL").innerHTML.includes("set-one"), true);
+
+// "review by" line under each rail entry
+const withRevs = { cards: [{ taskId: "t4", name: "Task Four", url: "u4", repos: [
+  { id: "r1", repo: "org/rev-a", prUrl: "https://github.com/org/rev-a/pull/4", status: "waiting for review",
+    reviewers: [{ name: "Barak", login: "baraktenjin", state: "REQUESTED" }, { name: "Copilot", login: "copilot-pull-request-reviewer", state: "COMMENTED" }] },
+  { id: "r2", repo: "org/rev-b", prUrl: "https://github.com/org/rev-b/pull/5", status: "waiting for review", reviewers: [] },
+]}]};
+render(withRevs, "rvN", "rvL", ["waiting for review", "waiting for re-review"]);
+const [revA, revB] = $("rvL").innerHTML.split('<div class="wp-item').slice(1);
+check("review-by lists every reviewer in order", /Barak[^]*Copilot/.test(revA) && revA.includes("review by"), true);
+check("requested reviewer marked as waiting", revA.includes("Barak ⏳"), true);
+check("no reviewers -> 'nobody yet'", revB.includes("nobody yet"), true);
+
+// "code updated" / "last review" lines: under a day reads "Nh ago", older adds "(N days ago)"
+const hoursAgo = h => new Date(Date.now() - h * 3600000).toISOString();
+const withTimes = { cards: [{ taskId: "t5", name: "Task Five", url: "u5", repos: [
+  { id: "r1", repo: "org/time-a", prUrl: "https://github.com/org/time-a/pull/1", status: "waiting for review",
+    createdAt: hoursAgo(24 * 12 + 1), lastCommitAt: hoursAgo(3), lastReviewAt: hoursAgo(74) },
+  { id: "r2", repo: "org/time-b", prUrl: "https://github.com/org/time-b/pull/2", status: "waiting for review",
+    lastCommitAt: hoursAgo(30), lastReviewAt: "" },
+]}]};
+render(withTimes, "rvN", "rvL", ["waiting for review", "waiting for re-review"]);
+const [timeA, timeB] = $("rvL").innerHTML.split('<div class="wp-item').slice(1);
+check("fresh code update -> '3h ago', no parentheses", /code updated<\/span> <span[^>]*>3h ago</.test(timeA), true);
+check("3-day-old review -> '(3 days ago)'", /last review<\/span> <span[^>]*>[^<]*\(3 days ago\)</.test(timeA), true);
+check("30h-old code update -> '(1 day ago)'", timeB.includes("(1 day ago)"), true);
+check("PR opened 12 days ago -> date + '(12 days ago)'", /PR opened<\/span> <span[^>]*>[^<]*\(12 days ago\)</.test(timeA), true);
+check("no opened date -> 'unknown'", /PR opened<\/span> <span class="none">unknown/.test(timeB), true);
+check("no review yet -> 'none yet'", /last review<\/span> <span class="none">none yet/.test(timeB), true);
+
+// sort: "groups" keeps board order, "date" puts the newest code update / review first
+const sortData = { cards: [
+  { taskId: "t6", name: "Old ticket", url: "u6", repos: [
+    { id: "r1", repo: "org/old", prUrl: "https://github.com/org/old/pull/1", status: "waiting for review", lastCommitAt: hoursAgo(90), lastReviewAt: hoursAgo(80) },
+    { id: "r2", repo: "org/none", prUrl: "https://github.com/org/none/pull/2", status: "waiting for review" },
+  ]},
+  { taskId: "t7", name: "New ticket", url: "u7", repos: [
+    { id: "r1", repo: "org/fresh-review", prUrl: "https://github.com/org/fresh-review/pull/3", status: "waiting for review", lastCommitAt: hoursAgo(100), lastReviewAt: hoursAgo(1) },
+    { id: "r2", repo: "org/fresh-code", prUrl: "https://github.com/org/fresh-code/pull/4", status: "waiting for review", lastCommitAt: hoursAgo(5), lastReviewAt: "" },
+  ]},
+]};
+const order = () => [...$("rvL").innerHTML.matchAll(/org\/([a-z-]+) PR/g)].map(m => m[1]);
+render(sortData, "rvN", "rvL", ["waiting for review"]);
+check("default sort = groups (board order)", order(), ["old", "none", "fresh-review", "fresh-code"]);
+render(sortData, "rvN", "rvL", ["waiting for review"], {}, "date-desc");
+check("newest first, no dates last", order(), ["fresh-review", "fresh-code", "old", "none"]);
+render(sortData, "rvN", "rvL", ["waiting for review"], {}, "date-asc");
+check("oldest first, no dates still last", order(), ["old", "fresh-code", "fresh-review", "none"]);
 
 console.log(fails ? `\n${fails} check(s) failed` : "\nall checks passed");
 process.exit(fails ? 1 : 0);

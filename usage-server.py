@@ -13,6 +13,7 @@ import datetime
 import glob
 import http.server
 import json
+import math
 import os
 import re
 import shlex
@@ -142,6 +143,14 @@ _REVIEWS_REFRESH_LOCK = threading.Lock()
 _GH_LOGIN_CACHE = {"at": 0, "login": None}
 GH_LOGIN_TTL = 3600  # seconds — your own username doesn't change mid-session
 _GH_PR_DETAIL_CACHE = {}  # prUrl -> {"data": {...}, "at": epoch}
+# Feature tracker: when every tracked PR was last re-asked from GitHub, and one refresh at a time
+_TRACKER_LIVE = {"at": 0}
+_TRACKER_REFRESH_LOCK = threading.Lock()
+_GH_USER_NAME_CACHE = {}  # login -> display name; profile names barely change, so no TTL
+# names for logins whose GitHub profile has none: "some-login=Alex,another-login=Sam"
+GITHUB_DISPLAY_NAMES = dict(
+    pair.split("=", 1) for pair in os.environ.get("GITHUB_DISPLAY_NAMES", "").split(",") if "=" in pair
+)
 REVIEWS_SEARCH_LIMIT = 50
 ORG_REPOS_TTL = 3600  # org repo list rarely changes
 
@@ -1534,7 +1543,7 @@ def _clickup_ts_to_iso(ms):
         return None
 
 
-def _repo_view(r, pr_status, pr_comments):
+def _repo_view(r, pr_status, pr_comments, max_age=GH_CACHE_TTL):
     """A repo entry as shown on the dashboard: live merge status, plus the shared work-status
     pill — recomputed from the PR's live GitHub review state (_classify_pr_status) on every
     refresh, overriding whatever manual status was last set (a PR with changes requested can't
@@ -1550,21 +1559,26 @@ def _repo_view(r, pr_status, pr_comments):
     review state alone doesn't mean nothing is outstanding."""
     pr_url = r.get("prUrl")
     login = _gh_login()
-    detail = _gh_pr_review_detail(pr_url) if pr_url else {"state": "none", "merged": False}
+    detail = _gh_pr_review_detail(pr_url, max_age) if pr_url else {"state": "none", "merged": False}
     status = _classify_pr_status(detail, login) or pr_status.get(pr_url, "")
     needs_reply = False
     if (pr_url and detail.get("state") == "OPEN"
             and status in ("waiting for review", "waiting for re-review", "ready to merge", "")
-            and _gh_pr_has_unanswered_thread(pr_url, login)):
+            and _gh_pr_has_unanswered_thread(pr_url, login, max_age=max_age)):
         needs_reply = True
         status = "working on it"
     merge = {"state": detail.get("state", "none"), "merged": bool(detail.get("merged"))}
     comment = pr_comments.get(pr_url, "")
-    return {**r, "status": status, "mergeStatus": merge, "comment": comment, "needsReply": needs_reply}
+    reviewers = _pr_reviewers(detail) if pr_url else []
+    return {**r, "status": status, "mergeStatus": merge, "comment": comment, "needsReply": needs_reply,
+            "reviewers": reviewers, "createdAt": detail.get("createdAt", ""),
+            "lastCommitAt": detail.get("lastCommitAt", ""),
+            "lastReviewAt": _pr_last_review_at(detail) if pr_url else ""}
 
 
-def _build_tracker():
-    """Combined tracker view: ClickUp snapshot + manual repo entries + live merge status."""
+def _build_tracker(max_age=GH_CACHE_TTL):
+    """Combined tracker view: ClickUp snapshot + manual repo entries + live merge status.
+    max_age is how old a cached per-PR GitHub answer may be (see _gh_pr_review_detail)."""
     snap = _clickup_load()
     tracker = _tracker_load()
     pr_status = _pr_status_load()
@@ -1572,7 +1586,7 @@ def _build_tracker():
     cards = []
     for tid, t in snap.get("tasks", {}).items():
         entry = tracker.get(tid) or {"repos": [], "deployed": False, "e2eTested": False}
-        repos = [_repo_view(r, pr_status, pr_comments) for r in entry["repos"]]
+        repos = [_repo_view(r, pr_status, pr_comments, max_age) for r in entry["repos"]]
         cards.append({
             "taskId": tid, "name": t.get("name", ""), "url": t.get("url", ""),
             "status": t.get("status", ""), "repos": repos, "listName": t.get("listName", ""),
@@ -1583,6 +1597,39 @@ def _build_tracker():
     return {"cards": cards, "fetchedAt": snap.get("fetchedAt"),
             "error": snap.get("error"), "unmatchedStatuses": snap.get("unmatchedStatuses", []),
             "prStatusOptions": PR_STATUS_OPTIONS}
+
+
+def _tracker_live_refresh(max_age=GH_CACHE_TTL):
+    """Re-ask GitHub about every tracked PR whose cached answer is older than max_age, off the
+    request path. One at a time: the stale GET, the refresh button and the startup warm-up can
+    all ask for one, and a second run would only repeat the same gh calls."""
+    if not _TRACKER_REFRESH_LOCK.acquire(blocking=False):
+        return
+    try:
+        _build_tracker(max_age)
+        _TRACKER_LIVE["at"] = time.time()
+    except Exception as e:
+        print(f"[tracker] live refresh error: {e}")
+    finally:
+        _TRACKER_REFRESH_LOCK.release()
+
+
+def _get_tracker():
+    """What GET /api/tracker serves. Built from whatever GitHub answers are cached, however old,
+    so coming back to the page doesn't wait ~30s on one `gh` call per PR. ClickUp data and your
+    own edits are read fresh every time. If the GitHub answers are older than GH_CACHE_TTL, a
+    background refresh starts, and `refreshing` tells the page newer data is on the way. Only a
+    PR nothing is cached for yet (just added, or the server just started) is fetched inline."""
+    if time.time() - _TRACKER_LIVE["at"] >= GH_CACHE_TTL and not _TRACKER_REFRESH_LOCK.locked():
+        threading.Thread(target=_tracker_live_refresh, daemon=True).start()
+    data = _build_tracker(math.inf)
+    return {**data, "refreshing": _TRACKER_REFRESH_LOCK.locked() or _CLICKUP_REFRESH_LOCK.locked()}
+
+
+def _tracker_refresh_now():
+    """The tracker's ↻ refresh: re-pull ClickUp, then re-ask GitHub about every PR."""
+    _clickup_refresh_guarded()
+    _tracker_live_refresh(max_age=0)
 
 
 def _gh_login():
@@ -1602,6 +1649,65 @@ def _gh_login():
     return login
 
 
+def _gh_display_name(login):
+    """Short name for a GitHub login, for the tracker's "review by" line, first match wins:
+    GITHUB_DISPLAY_NAMES, "Copilot" for the Copilot reviewer bot, the first word of the
+    profile name ("Barak Cohen" -> "Barak"), the first part of a dashed login
+    ("yehonatan-melech" -> "Yehonatan"), else the login itself."""
+    if login in GITHUB_DISPLAY_NAMES:
+        return GITHUB_DISPLAY_NAMES[login].strip()
+    if "copilot" in login.lower():
+        return "Copilot"
+    if login in _GH_USER_NAME_CACHE:
+        return _GH_USER_NAME_CACHE[login]
+    name = ""
+    try:
+        res = subprocess.run(["gh", "api", f"users/{login}", "-q", ".name // \"\""],
+                             capture_output=True, text=True, timeout=GH_TIMEOUT)
+        if res.returncode == 0:
+            name = res.stdout.strip()
+    except Exception:
+        return login.removesuffix("[bot]")  # not cached, so a later refresh retries
+    if name:
+        _GH_USER_NAME_CACHE[login] = name.split()[0]
+    elif "-" in login.strip("-"):
+        _GH_USER_NAME_CACHE[login] = login.strip("-").split("-")[0].capitalize()
+    else:
+        _GH_USER_NAME_CACHE[login] = login.removesuffix("[bot]")
+    return _GH_USER_NAME_CACHE[login]
+
+
+def _pr_reviewers(detail):
+    """Everyone reviewing a PR, in the order they first showed up: people who submitted a
+    review (with their latest verdict), then pending review requests not yet answered. The
+    PR author is left out — their replies to review threads also count as COMMENTED reviews."""
+    author = detail.get("author") or ""
+    latest = {}
+    for rv in detail.get("reviews") or []:
+        login = (rv.get("author") or {}).get("login") or ""
+        if not login or login == author:
+            continue
+        state = rv.get("state") or ""
+        # a later plain comment doesn't undo an approval or a change request
+        if state == "COMMENTED" and latest.get(login) in ("APPROVED", "CHANGES_REQUESTED"):
+            continue
+        latest[login] = state
+    for rr in detail.get("reviewRequests") or []:
+        login = rr.get("login") or rr.get("slug") or rr.get("name") or ""
+        if login and login != author:
+            latest[login] = "REQUESTED"  # re-requested after reviewing = waiting on them again
+    return [{"name": _gh_display_name(login), "login": login, "state": state}
+            for login, state in latest.items()]
+
+
+def _pr_last_review_at(detail):
+    """When anyone other than the PR author last submitted a review, as an ISO timestamp, or
+    "" if nobody has. The author's own thread replies show up as reviews too, so they're skipped."""
+    author = detail.get("author") or ""
+    return max((rv.get("submittedAt") or "" for rv in detail.get("reviews") or []
+                if ((rv.get("author") or {}).get("login") or "") not in ("", author)), default="")
+
+
 def _gh_search_prs(extra_args):
     """Run `gh search prs --owner GITHUB_ORG <extra_args>` and return the parsed JSON list,
     or [] on any failure — a bad/empty search shouldn't take the whole page down."""
@@ -1617,16 +1723,17 @@ def _gh_search_prs(extra_args):
         return []
 
 
-def _gh_pr_review_detail(pr_url):
+def _gh_pr_review_detail(pr_url, max_age=GH_CACHE_TTL):
     """Per-PR review detail (state, reviews, pending review requests) via `gh pr view`.
-    Cached briefly; never raises, so one bad PR doesn't blank the whole page."""
+    A cached answer younger than max_age seconds is reused (math.inf = any cached answer,
+    0 = always fetch). Never raises, so one bad PR doesn't blank the whole page."""
     now = time.time()
     hit = _GH_PR_DETAIL_CACHE.get(pr_url)
-    if hit and now - hit["at"] < GH_CACHE_TTL:
+    if hit and now - hit["at"] < max_age:
         return hit["data"]
     try:
         res = subprocess.run(
-            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt,reviews,reviewRequests,isDraft"],
+            ["gh", "pr", "view", pr_url, "--json", "state,mergedAt,reviews,reviewRequests,isDraft,author,commits,createdAt"],
             capture_output=True, text=True, timeout=GH_TIMEOUT,
         )
         if res.returncode != 0:
@@ -1639,6 +1746,9 @@ def _gh_pr_review_detail(pr_url):
                 "isDraft": bool(j.get("isDraft")),
                 "reviews": j.get("reviews") or [],
                 "reviewRequests": j.get("reviewRequests") or [],
+                "author": (j.get("author") or {}).get("login") or "",
+                "createdAt": j.get("createdAt") or "",
+                "lastCommitAt": max((c.get("committedDate") or "" for c in j.get("commits") or []), default=""),
             }
     except Exception:
         data = {"state": "UNKNOWN", "merged": False, "reviews": [], "reviewRequests": []}
@@ -1660,7 +1770,7 @@ query($owner:String!, $name:String!, $number:Int!) {
 }"""
 
 
-def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None):
+def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None, max_age=GH_CACHE_TTL):
     """True if pr_url has an unresolved review thread whose latest comment is one `login`
     still owes an answer to. Threads last-commented by a bot (Copilot's auto-review, etc. —
     GraphQL reports these with author __typename "Bot") never count: an unanswered Copilot
@@ -1690,7 +1800,7 @@ def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None):
     # asked about from the tracker and from the Reviews page are two different questions.
     cache_key = (pr_url, author_login, since)
     hit = _GH_THREADS_CACHE.get(cache_key)
-    if hit and now - hit["at"] < GH_CACHE_TTL:
+    if hit and now - hit["at"] < max_age:  # same max_age meaning as _gh_pr_review_detail
         return hit["data"]
     m = _PR_URL_EXACT_RE.match(pr_url)
     if not m:
@@ -1731,7 +1841,7 @@ def _gh_pr_has_unanswered_thread(pr_url, login, author_login=None, since=None):
     return data
 
 
-def _build_reviews():
+def _build_reviews(max_age=GH_CACHE_TTL):
     """PRs you were asked to review (pending) or have already reviewed, across GITHUB_ORG.
     Two `gh search prs` calls find the candidate PRs; `gh pr view` (cached) fills in your
     actual review verdict on each, since search doesn't expose that. Always fetches live and
@@ -1757,7 +1867,7 @@ def _build_reviews():
 
     cards = []
     for url, pr in by_url.items():
-        detail = _gh_pr_review_detail(url)
+        detail = _gh_pr_review_detail(url, max_age)
         my_reviews = [r for r in detail["reviews"] if (r.get("author") or {}).get("login") == login]
         my_reviews.sort(key=lambda r: r.get("submittedAt") or "")
         my_verdict = my_reviews[-1]["state"] if my_reviews else None
@@ -1774,7 +1884,7 @@ def _build_reviews():
         # your latest review counts as your answer to every author reply that came before it
         my_last_review_at = my_reviews[-1].get("submittedAt") if my_reviews else None
         needs_reply = state == "OPEN" and _gh_pr_has_unanswered_thread(
-            url, login, author_login=pr_author, since=my_last_review_at)
+            url, login, author_login=pr_author, since=my_last_review_at, max_age=max_age)
         # GitHub only clears you from reviewRequests on an Approve/Request-changes verdict —
         # a Comment-only review (the common case for "just replying to threads") leaves you
         # listed as requested forever, even after you've replied to everything. Trust that
@@ -1795,6 +1905,10 @@ def _build_reviews():
             "myVerdict": my_verdict,
             "awaitingAuthor": awaiting_author,
             "needsReply": needs_reply,
+            "reviewers": _pr_reviewers(detail),
+            "createdAt": detail.get("createdAt", ""),
+            "lastCommitAt": detail.get("lastCommitAt", ""),
+            "lastReviewAt": _pr_last_review_at(detail),
         })
 
     # PRs still waiting on you first, then most-recently-updated (stable sort: order by
@@ -1807,13 +1921,13 @@ def _build_reviews():
     return data
 
 
-def _reviews_refresh_guarded():
-    """Run _build_reviews() unless a rebuild is already in progress, in which case skip and
+def _reviews_refresh_guarded(max_age=GH_CACHE_TTL):
+    """Run _build_reviews(max_age) unless a rebuild is already in progress, in which case skip and
     return None rather than stacking a second run of the same ~20s of gh calls."""
     if not _REVIEWS_REFRESH_LOCK.acquire(blocking=False):
         return None
     try:
-        return _build_reviews()
+        return _build_reviews(max_age)
     finally:
         _REVIEWS_REFRESH_LOCK.release()
 
@@ -2249,21 +2363,19 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             except Exception as e:
                 return self._json({"error": str(e)}, 500)
         if self.path.startswith("/api/tracker/refresh"):
-            # force a re-pull of the ClickUp snapshot + drop cached PR review status, off-thread
-            if _CLICKUP_REFRESH_LOCK.locked():
+            # re-pull the ClickUp snapshot, then re-fetch every PR from GitHub, off-thread. The
+            # caches are not cleared: GET keeps serving the old answers until new ones land.
+            if _CLICKUP_REFRESH_LOCK.locked() or _TRACKER_REFRESH_LOCK.locked():
                 return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
-            _GH_PR_DETAIL_CACHE.clear()
-            _GH_THREADS_CACHE.clear()
-            threading.Thread(target=_clickup_refresh_guarded, daemon=True).start()
+            threading.Thread(target=_tracker_refresh_now, daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/reviews/refresh"):
-            # drop per-PR detail so the rebuild refetches live, and rebuild off-thread — the
-            # old board keeps being served until the new one lands (the page polls fetchedAt)
-            _GH_PR_DETAIL_CACHE.clear()
-            _GH_THREADS_CACHE.clear()
+            # rebuild off-thread, re-fetching every PR live (max_age=0) — the old board keeps
+            # being served until the new one lands (the page polls fetchedAt). The caches are
+            # not cleared, since the tracker page reads the same ones.
             if _REVIEWS_REFRESH_LOCK.locked():
                 return self._json({"ok": True, "refreshing": True, "alreadyRunning": True})
-            threading.Thread(target=_reviews_refresh_guarded, daemon=True).start()
+            threading.Thread(target=_reviews_refresh_guarded, args=(0,), daemon=True).start()
             return self._json({"ok": True, "refreshing": True})
         if self.path.startswith("/api/recap/refresh"):
             # force a regeneration of recaps for changed sessions, off-thread
@@ -2383,7 +2495,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if self.path.startswith("/api/tracker"):
             try:
-                self._json(_build_tracker())
+                self._json(_get_tracker())
             except Exception as e:
                 self._json({"error": str(e)}, 502)
             return
@@ -2437,6 +2549,8 @@ if __name__ == "__main__":
         threading.Thread(target=_clickup_worker, daemon=True).start()
         # background PR Reviews worker — keeps /api/reviews warm so the page never waits on gh
         threading.Thread(target=_reviews_worker, daemon=True).start()
+        # one-off warm-up so the first tracker visit doesn't wait on a gh call per PR
+        threading.Thread(target=_tracker_live_refresh, daemon=True).start()
     # Threaded server: one slow/blocked request (e.g. a hung osascript or usage fetch)
     # must never freeze the whole dashboard. daemon_threads so it shuts down cleanly.
     http.server.ThreadingHTTPServer.allow_reuse_address = True

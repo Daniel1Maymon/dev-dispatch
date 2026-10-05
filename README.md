@@ -49,6 +49,14 @@ it up automatically, no need to export it yourself:
 CLICKUP_API_TOKEN=pk_your_token_here
 ```
 
+The tracker's side rails show who is reviewing each PR, using the first word of each
+reviewer's GitHub profile name. For reviewers whose profile has no name, set a short name in
+the same `.env`:
+
+```bash
+GITHUB_DISPLAY_NAMES=some-login=Alex,another-login=Sam
+```
+
 By default the server also runs two background workers on a timer for as long as it stays
 up: recaps every 5 min (calls `claude -p`, so this one does cost tokens continuously) and
 the ClickUp feature-tracker every 10 min (plain ClickUp API calls — fast, and costs no

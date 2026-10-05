@@ -5,6 +5,7 @@ Runs against a throwaway STATE_DIR so it never touches your real state/.
 Usage:  python3 test_topic_overrides.py
 """
 import importlib.util
+import json
 import os
 import tempfile
 
@@ -170,6 +171,61 @@ try:
 except ValueError:
     raised = True
 check("unknown session action rejected", raised)
+
+# --- tracker "review by" list (names pre-cached so no GitHub call is made) ---
+srv._GH_USER_NAME_CACHE.update({"baraktenjin": "Barak", "yoni": "Yehonatan"})
+revs = srv._pr_reviewers({
+    "author": "me",
+    "reviews": [
+        {"author": {"login": "me"}, "state": "COMMENTED"},  # author replying to a thread
+        {"author": {"login": "copilot-pull-request-reviewer"}, "state": "COMMENTED"},
+        {"author": {"login": "yoni"}, "state": "APPROVED"},
+        {"author": {"login": "yoni"}, "state": "COMMENTED"},  # later nit after approving
+        {"author": {"login": "baraktenjin"}, "state": "CHANGES_REQUESTED"},
+    ],
+    "reviewRequests": [{"__typename": "User", "login": "baraktenjin"}],  # re-requested
+})
+check("PR author left out of reviewers", all(r["login"] != "me" for r in revs))
+check("reviewers in first-seen order with display names",
+      [r["name"] for r in revs] == ["Copilot", "Yehonatan", "Barak"])
+check("a later comment keeps the approval", revs[1]["state"] == "APPROVED")
+check("re-requested reviewer shows as requested", revs[2]["state"] == "REQUESTED")
+srv.GITHUB_DISPLAY_NAMES["oddlogin"] = "Dana"
+check("GITHUB_DISPLAY_NAMES wins", srv._gh_display_name("oddlogin") == "Dana")
+srv._GH_USER_NAME_CACHE.pop("first-last", None)
+srv.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": ""})()  # profile with no name
+check("dashed login with no profile name -> first part", srv._gh_display_name("first-last") == "First")
+check("no reviews, no requests -> empty list", srv._pr_reviewers({"author": "me"}) == [])
+
+# --- tracker "code updated" / "last review" times ---
+check("last review = newest non-author review", srv._pr_last_review_at({
+    "author": "me",
+    "reviews": [
+        {"author": {"login": "yoni"}, "submittedAt": "2026-10-01T09:00:00Z"},
+        {"author": {"login": "baraktenjin"}, "submittedAt": "2026-10-02T09:00:00Z"},
+        {"author": {"login": "me"}, "submittedAt": "2026-10-03T09:00:00Z"},  # author's own reply
+    ],
+}) == "2026-10-02T09:00:00Z")
+check("no reviews -> empty last review", srv._pr_last_review_at({"author": "me", "reviews": []}) == "")
+srv._GH_PR_DETAIL_CACHE.clear()
+srv.subprocess.run = lambda *a, **k: type("R", (), {"returncode": 0, "stdout": json.dumps({
+    "state": "OPEN", "author": {"login": "me"}, "reviews": [], "reviewRequests": [],
+    "commits": [{"committedDate": "2026-10-01T08:00:00Z"}, {"committedDate": "2026-10-03T12:00:00Z"},
+                {"committedDate": "2026-10-02T08:00:00Z"}]})})()
+check("last code update = newest commit", srv._gh_pr_review_detail("https://github.com/o/r/pull/1")["lastCommitAt"]
+      == "2026-10-03T12:00:00Z")
+
+# --- tracker serves old GitHub answers instead of waiting on gh ---
+calls = []
+srv.subprocess.run = lambda *a, **k: (calls.append(a), type("R", (), {"returncode": 0, "stdout": json.dumps({
+    "state": "MERGED", "mergedAt": "2026-10-04T00:00:00Z", "reviews": [], "reviewRequests": []})})())[1]
+srv._GH_PR_DETAIL_CACHE["https://github.com/o/r/pull/9"] = {"data": {"state": "OPEN", "merged": False}, "at": 0}
+check("max_age=inf reuses a day-old answer without calling gh",
+      srv._gh_pr_review_detail("https://github.com/o/r/pull/9", srv.math.inf)["state"] == "OPEN" and not calls)
+check("default max_age refetches an old answer",
+      srv._gh_pr_review_detail("https://github.com/o/r/pull/9")["state"] == "MERGED" and len(calls) == 1)
+check("max_age=0 always refetches",
+      (srv._gh_pr_review_detail("https://github.com/o/r/pull/9", 0), len(calls))[1] == 2)
 
 print(f"\n{ok} passed, {fail} failed")
 raise SystemExit(1 if fail else 0)
